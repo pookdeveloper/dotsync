@@ -1,0 +1,18 @@
+[package]
+name = "dotsync"
+version = "0.1.0"
+edition = "2021"
+description = "CLI and library for applying and reversing dotfile sync"
+readme = "README.md"
+keywords = ["dotfiles", "stow", "cli", "sync"]
+categories = ["command-line-utilities", "filesystem"]
+
+[lib]
+name = "dotsync"
+path = "src/lib.rs"
+
+[[bin]]
+name = "dotsync"
+path = "src/main.rs"
+
+[dependencies]
