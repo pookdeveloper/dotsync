@@ -16,6 +16,13 @@ To synchronize in reverse, from destination back to origin:
 dotsync [options] --reverse --origin <origin_dir> --destination <destination_dir>
 ```
 
+### What the reverse mode does
+
+The **reverse mode** synchronizes files from `destination` back to `origin` (your dotfiles repository).
+
+- Only iterates files already present in `origin`, so nothing unexpected is pulled from `destination`.
+- Uses the same diff logic as the default mode — no copies unless the content actually differs.
+
 Positional paths are also supported:
 
 ```bash
@@ -81,46 +88,6 @@ Notes:
 - By default, `git clean -fdX .` runs inside the origin directory at the end.
 - In `--dry-run`, no directories are created, no files are copied, and `git clean` is not executed.
 
-## Library usage
-
-```rust
-use std::path::PathBuf;
-
-use dotsync::{sync_dotfiles, Mode, SyncOptions};
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let home = PathBuf::from(std::env::var("HOME")?);
-    let dotfiles = home.join("dotfiles");
-
-    let options = SyncOptions::new(Mode::Apply, dotfiles, home).with_dry_run(true);
-
-    let report = sync_dotfiles(&options)?;
-    println!("{} planned copies", report.planned_copies());
-
-    Ok(())
-}
-```
-
-Use `Mode::Reverse` for reverse synchronization from the library.
-
-## Local installation
-
-Rust uses `Cargo.toml` as the package manifest. It does not have `package.json` scripts, but Cargo supports project aliases through `.cargo/config.toml`.
-
-Install the CLI locally from this repository:
-
-```bash
-cargo install-local
-```
-
-That alias expands to:
-
-```bash
-cargo install --path . --locked --force
-```
-
-The binary is installed to Cargo's bin directory, usually `~/.cargo/bin/dotsync`. Make sure `~/.cargo/bin` is in your `PATH`.
-
 ## Installation with curl
 
 `scripts/install.sh` installs binaries published in GitHub Releases. The repository must publish assets according to the contract documented in `packaging/RELEASE.md`.
@@ -140,13 +107,9 @@ curl -fsSL https://raw.githubusercontent.com/pookdeveloper/dotsync/main/scripts/
 
 ## Homebrew
 
-A formula template is available at `packaging/homebrew/dotsync.rb`.
-
-Recommended flow:
+You can install `dotsync` using Homebrew in a few steps if the formula has been published to a tap:
 
 ```bash
-brew tap OWNER/tap
+brew tap pookdeveloper/tap
 brew install dotsync
 ```
-
-Before publishing the Homebrew tap, replace `OWNER` in the tap command, set the formula `SHA256`, and choose a license. Do not pick a license by inertia: that is the project's legal architecture, not decoration.
