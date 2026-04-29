@@ -3,7 +3,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use dotsync::{sync_dotfiles, DotSyncError, Mode, SyncOptions, SyncReport};
+use dotsync::{sync_dotfiles, DotSyncError, Mode, SyncOptions};
 
 #[derive(Debug)]
 enum AppError {
@@ -48,12 +48,17 @@ fn main() {
 
 fn run() -> Result<(), AppError> {
     let options = parse_arguments(env::args().skip(1))?;
-    let report = sync_dotfiles(&options)?;
-
-    print_report(&report, &options);
 
     println!(
-        "Files processed successfully with '{}'.",
+        "Syncing from {} to {}\n",
+        options.origin_dir.display(),
+        options.destination_dir.display()
+    );
+
+    sync_dotfiles(&options)?;
+
+    println!(
+        "\nDone. Mode: '{}'.",
         options.mode.as_str()
     );
 
@@ -201,59 +206,6 @@ fn absolute_path(value: impl AsRef<Path>) -> Result<PathBuf, AppError> {
     }
 }
 
-fn print_report(report: &SyncReport, options: &SyncOptions) {
-
-    println!("Copying files from {} to {} \n", options.origin_dir.display(), options.destination_dir.display());
-
-    for operation in &report.copy_operations {
-        if operation.executed {
-            println!(
-                "Copied: {} -> {}",
-                operation.source.display(),
-                operation.destination.display()
-            );
-        } else {
-            println!(
-                "[dry-run] Would copy: {} -> {}",
-                operation.source.display(),
-                operation.destination.display()
-            );
-        }
-    }
-
-    for relative_path in &report.skipped_missing_files {
-        eprintln!(
-            "Warning: file {} was not found in {}. It will be skipped.",
-            relative_path.display(),
-            options.destination_dir.display()
-        );
-    }
-
-    for symlink_path in &report.skipped_symlinks {
-        eprintln!(
-            "Warning: skipping symlink '{}'.",
-            symlink_path.display()
-        );
-    }
-
-    if report.dry_run {
-        println!(
-            "[dry-run] Summary: {} planned copies, {} skipped files, {} skipped symlinks.",
-            report.planned_copies(),
-            report.skipped_missing_files.len(),
-            report.skipped_symlinks.len()
-        );
-    } else {
-        println!(
-            "Summary: {} executed copies, {} skipped files, {} skipped symlinks.",
-            report.executed_copies(),
-            report.skipped_missing_files.len(),
-            report.skipped_symlinks.len()
-        );
-    }
-}
-
-
 fn print_usage() {
     eprintln!("Usage:");
     eprintln!("  dotsync [options] --origin <origin_dir> --destination <destination_dir>");
@@ -264,11 +216,10 @@ fn print_usage() {
     eprintln!("  dotsync [options] <origin_dir> <destination_dir>");
     eprintln!();
     eprintln!("Direction:");
-    eprintln!("  no command          Apply from origin to destination.");
-    eprintln!(
-        "  --reverse           Copy from destination to origin following origin's structure."
-    );
-    eprintln!("  reverse             Equivalent to --reverse.");
+    eprintln!("  no command               Apply from origin to destination.");
+    eprintln!("  --reverse                Copy from destination to origin (full dir sync).");
+    eprintln!("  --reverse-only-files     Copy from destination to origin (existing files only).");
+    eprintln!("  reverse                  Equivalent to --reverse.");
     eprintln!();
     eprintln!("Legacy aliases:");
     eprintln!("  apply               Explicit alias for the default mode.");
@@ -279,13 +230,12 @@ fn print_usage() {
     eprintln!("  --home              Legacy alias for --destination.");
     eprintln!();
     eprintln!("Options:");
-    eprintln!("  -n, --dry-run       Show what would happen without copying or cleaning.");
-    eprintln!("      --reverse       Enable reverse synchronization.");
-    eprintln!("      --no-clean      Do not run git clean -fdX . at the end.");
-    eprintln!("      --origin <path> Origin directory path.");
-    eprintln!("      --destination <path>");
-    eprintln!("                         Destination directory path.");
-    eprintln!("      --dest <path>   Short alias for --destination.");
-    eprintln!("  -h, --help          Show this help message.");
-    eprintln!("      --version       Show version information.");
+    eprintln!("  -n, --dry-run            Show what would happen without copying files.");
+    eprintln!("      --reverse            Enable reverse synchronization.");
+    eprintln!("      --reverse-only-files Enable reverse sync for existing files only.");
+    eprintln!("      --origin <path>      Origin directory path.");
+    eprintln!("      --destination <path> Destination directory path.");
+    eprintln!("      --dest <path>        Short alias for --destination.");
+    eprintln!("  -h, --help               Show this help message.");
+    eprintln!("      --version            Show version information.");
 }

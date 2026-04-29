@@ -46,7 +46,7 @@ pub struct SyncOptions {
     pub destination_dir: PathBuf,
     pub dry_run: bool,
     /// When true, reverse mode copies only the exact files present in `origin_dir`,
-    /// file by file, instead of syncing entire directories with rsync.
+    /// using rsync `--existing` so no new files are created in the repo.
     pub reverse_only_files: bool,
 }
 
@@ -73,40 +73,6 @@ impl SyncOptions {
     pub fn with_reverse_only_files(mut self, reverse_only_files: bool) -> Self {
         self.reverse_only_files = reverse_only_files;
         self
-    }
-}
-
-/// A planned or executed copy operation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CopyOperation {
-    pub source: PathBuf,
-    pub destination: PathBuf,
-    pub executed: bool,
-}
-
-/// Accumulated synchronization result.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SyncReport {
-    pub dry_run: bool,
-    pub copy_operations: Vec<CopyOperation>,
-    pub skipped_missing_files: Vec<PathBuf>,
-    /// Symlinks encountered during reverse mode — skipped intentionally.
-    pub skipped_symlinks: Vec<PathBuf>,
-}
-
-impl SyncReport {
-    pub fn executed_copies(&self) -> usize {
-        self.copy_operations
-            .iter()
-            .filter(|operation| operation.executed)
-            .count()
-    }
-
-    pub fn planned_copies(&self) -> usize {
-        self.copy_operations
-            .iter()
-            .filter(|operation| !operation.executed)
-            .count()
     }
 }
 
@@ -161,27 +127,15 @@ impl std::error::Error for DotSyncError {
 /// Synchronizes dotfiles according to the provided options.
 ///
 /// In `dry_run`, it does not create directories or copy files.
-pub fn sync_dotfiles(options: &SyncOptions) -> Result<SyncReport, DotSyncError> {
+pub fn sync_dotfiles(options: &SyncOptions) -> Result<(), DotSyncError> {
     validate_origin_dir(&options.origin_dir)?;
 
-    let mut report = SyncReport {
-        dry_run: options.dry_run,
-        copy_operations: Vec::new(),
-        skipped_missing_files: Vec::new(),
-        skipped_symlinks: Vec::new(),
-    };
-
     match options.mode {
-        Mode::Apply => process_apply(
-            &options.origin_dir,
-            &options.origin_dir,
-            options,
-            &mut report,
-        )?,
-        Mode::Reverse => process_reverse_root(options, &mut report)?,
+        Mode::Apply => process_apply(&options.origin_dir, &options.origin_dir, options)?,
+        Mode::Reverse => process_reverse_root(options)?,
     }
 
-    Ok(report)
+    Ok(())
 }
 
 fn validate_origin_dir(origin_dir: &Path) -> Result<(), DotSyncError> {
@@ -197,7 +151,6 @@ fn process_apply(
     current_dir: &Path,
     base_dir: &Path,
     options: &SyncOptions,
-    report: &mut SyncReport,
 ) -> Result<(), DotSyncError> {
     let entries = read_dir_entries(current_dir)?;
 
@@ -215,10 +168,10 @@ fn process_apply(
                 })?;
 
         if full_entry_path.is_dir() {
-            process_apply(&full_entry_path, base_dir, options, report)?;
+            process_apply(&full_entry_path, base_dir, options)?;
         } else {
             let destination = options.destination_dir.join(relative_path);
-            copy_file(&full_entry_path, &destination, options.dry_run, report)?;
+            copy_file(&full_entry_path, &destination, options.dry_run)?;
         }
     }
 
@@ -228,16 +181,11 @@ fn process_apply(
 /// Reverse mode: iterates `origin_dir` (the repo) and copies each entry from
 /// `destination_dir` (the machine) back into `origin_dir`.
 ///
-/// - Only entries that exist in `origin_dir` are considered — this is the
-///   whitelist. If `.trunk` is not in the repo, it will never be touched.
-/// - Directories: if `reverse_only_files` is set, rsync uses `--existing` to
-///   update only files already in the repo; otherwise full sync captures new files too.
-/// - If an entry does not exist in `destination_dir`, it is skipped.
-/// - Symlinks are skipped and recorded in the report.
-fn process_reverse_root(
-    options: &SyncOptions,
-    report: &mut SyncReport,
-) -> Result<(), DotSyncError> {
+/// - Only entries that exist in `origin_dir` are considered — the repo is the whitelist.
+/// - Directories: if `reverse_only_files` is set, rsync uses `--existing` to update
+///   only files already in the repo; otherwise full sync captures new files too.
+/// - Entries missing from `destination_dir` or that are symlinks are skipped.
+fn process_reverse_root(options: &SyncOptions) -> Result<(), DotSyncError> {
     let entries = read_dir_entries(&options.origin_dir)?;
 
     for full_origin_path in entries {
@@ -255,21 +203,27 @@ fn process_reverse_root(
         let source = options.destination_dir.join(relative_path);
 
         if !source.exists() && !source.is_symlink() {
-            report.skipped_missing_files.push(relative_path.to_path_buf());
+            eprintln!(
+                "Warning: '{}' not found in destination, skipping.",
+                relative_path.display()
+            );
             continue;
         }
 
         if source.is_symlink() {
-            report.skipped_symlinks.push(source);
+            eprintln!(
+                "Warning: skipping symlink '{}'.",
+                source.display()
+            );
             continue;
         }
 
         let dest = options.origin_dir.join(relative_path);
 
         if source.is_dir() {
-            copy_dir_all(&source, &dest, options.dry_run, options.reverse_only_files, report)?;
+            copy_dir_all(&source, &dest, options.dry_run, options.reverse_only_files)?;
         } else {
-            copy_file(&source, &dest, options.dry_run, report)?;
+            copy_file(&source, &dest, options.dry_run)?;
         }
     }
 
@@ -280,22 +234,19 @@ fn process_reverse_root(
 ///
 /// `-a` (archive) is recursive and preserves permissions and timestamps.
 /// `--no-links` skips symlinks — they are machine-local and meaningless in a repo.
-/// `only_existing` adds `--existing`, which makes rsync update only files that
-/// already exist in `dst_dir`, never creating new ones.
+/// `only_existing` adds `--existing` so rsync never creates new files in `dst_dir`.
 fn copy_dir_all(
     src_dir: &Path,
     dst_dir: &Path,
     dry_run: bool,
     only_existing: bool,
-    report: &mut SyncReport,
 ) -> Result<(), DotSyncError> {
-    report.copy_operations.push(CopyOperation {
-        source: src_dir.to_path_buf(),
-        destination: dst_dir.to_path_buf(),
-        executed: !dry_run,
-    });
-
     if dry_run {
+        println!(
+            "[dry-run] Would rsync: {} -> {}",
+            src_dir.display(),
+            dst_dir.display()
+        );
         return Ok(());
     }
 
@@ -330,12 +281,10 @@ fn copy_dir_all(
             source,
         })?;
 
-    // Print each file rsync transferred, prefixing with the dst base path
-    // so the output is consistent with copy_file logs.
-    // let transferred = String::from_utf8_lossy(&output.stdout);
-    // for line in transferred.lines() {
-    //     println!("{}/{}", dst_dir.display(), line.trim_start_matches("Copied: "));
-    // }
+    let transferred = String::from_utf8_lossy(&output.stdout);
+    for line in transferred.lines() {
+        println!("{}/{}", dst_dir.display(), line.trim_start_matches("Copied: "));
+    }
 
     if !output.status.success() {
         return Err(DotSyncError::CommandFailed {
@@ -368,36 +317,33 @@ fn read_dir_entries(dir: &Path) -> Result<Vec<PathBuf>, DotSyncError> {
         .collect()
 }
 
-fn copy_file(
-    source: &Path,
-    destination: &Path,
-    dry_run: bool,
-    report: &mut SyncReport,
-) -> Result<(), DotSyncError> {
-    if !dry_run {
-        if let Some(destination_dir) = destination.parent() {
-            fs::create_dir_all(destination_dir).map_err(|source_error| DotSyncError::Io {
-                context: format!("Could not create directory '{}'", destination_dir.display()),
-                source: source_error,
-            })?;
-        }
+fn copy_file(source: &Path, destination: &Path, dry_run: bool) -> Result<(), DotSyncError> {
+    if dry_run {
+        println!(
+            "[dry-run] Would copy: {} -> {}",
+            source.display(),
+            destination.display()
+        );
+        return Ok(());
+    }
 
-        print!("Copied: {} -> {}\n", source.display(), destination.display());
-        fs::copy(source, destination).map_err(|source_error| DotSyncError::Io {
-            context: format!(
-                "Could not copy '{}' to '{}'",
-                source.display(),
-                destination.display()
-            ),
+    if let Some(destination_dir) = destination.parent() {
+        fs::create_dir_all(destination_dir).map_err(|source_error| DotSyncError::Io {
+            context: format!("Could not create directory '{}'", destination_dir.display()),
             source: source_error,
         })?;
     }
 
-    report.copy_operations.push(CopyOperation {
-        source: source.to_path_buf(),
-        destination: destination.to_path_buf(),
-        executed: !dry_run,
-    });
+    fs::copy(source, destination).map_err(|source_error| DotSyncError::Io {
+        context: format!(
+            "Could not copy '{}' to '{}'",
+            source.display(),
+            destination.display()
+        ),
+        source: source_error,
+    })?;
+
+    println!("Copied: {} -> {}", source.display(), destination.display());
 
     Ok(())
 }
