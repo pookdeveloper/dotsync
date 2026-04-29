@@ -29,10 +29,7 @@ impl FromStr for Mode {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
-            "apply" => Ok(Self::Apply),
             "reverse" => Ok(Self::Reverse),
-            // Legacy aliases from earlier CLI iterations.
-            "backup" | "capture" => Ok(Self::Reverse),
             _ => Err(DotSyncError::InvalidMode(value.to_string())),
         }
     }
@@ -48,6 +45,8 @@ pub struct SyncOptions {
     /// When true, reverse mode copies only the exact files present in `origin_dir`,
     /// using rsync `--existing` so no new files are created in the repo.
     pub reverse_only_files: bool,
+    /// When true, logs every copied file. Warnings and errors are always shown.
+    pub verbose: bool,
 }
 
 impl SyncOptions {
@@ -62,6 +61,7 @@ impl SyncOptions {
             destination_dir: destination_dir.into(),
             dry_run: false,
             reverse_only_files: false,
+            verbose: false,
         }
     }
 
@@ -72,6 +72,11 @@ impl SyncOptions {
 
     pub fn with_reverse_only_files(mut self, reverse_only_files: bool) -> Self {
         self.reverse_only_files = reverse_only_files;
+        self
+    }
+
+    pub fn with_verbose(mut self, verbose: bool) -> Self {
+        self.verbose = verbose;
         self
     }
 }
@@ -91,7 +96,7 @@ impl fmt::Display for DotSyncError {
             Self::InvalidMode(mode) => {
                 write!(
                     f,
-                    "Error: command '{mode}' must be 'reverse' or a valid alias."
+                    "Error: command '{mode}' is not valid. Use 'reverse'."
                 )
             }
             Self::InvalidOriginDir(path) => {
@@ -171,7 +176,7 @@ fn process_apply(
             process_apply(&full_entry_path, base_dir, options)?;
         } else {
             let destination = options.destination_dir.join(relative_path);
-            copy_file(&full_entry_path, &destination, options.dry_run)?;
+            copy_file(&full_entry_path, &destination, options.dry_run, options.verbose)?;
         }
     }
 
@@ -221,9 +226,9 @@ fn process_reverse_root(options: &SyncOptions) -> Result<(), DotSyncError> {
         let dest = options.origin_dir.join(relative_path);
 
         if source.is_dir() {
-            copy_dir_all(&source, &dest, options.dry_run, options.reverse_only_files)?;
+            copy_dir_all(&source, &dest, options.dry_run, options.reverse_only_files, options.verbose)?;
         } else {
-            copy_file(&source, &dest, options.dry_run)?;
+            copy_file(&source, &dest, options.dry_run, options.verbose)?;
         }
     }
 
@@ -240,13 +245,16 @@ fn copy_dir_all(
     dst_dir: &Path,
     dry_run: bool,
     only_existing: bool,
+    verbose: bool,
 ) -> Result<(), DotSyncError> {
     if dry_run {
-        println!(
-            "[dry-run] Would rsync: {} -> {}",
-            src_dir.display(),
-            dst_dir.display()
-        );
+        if verbose {
+            println!(
+                "[dry-run] Would rsync: {} -> {}",
+                src_dir.display(),
+                dst_dir.display()
+            );
+        }
         return Ok(());
     }
 
@@ -282,8 +290,10 @@ fn copy_dir_all(
         })?;
 
     let transferred = String::from_utf8_lossy(&output.stdout);
-    for line in transferred.lines() {
-        println!("{}/{}", dst_dir.display(), line.trim_start_matches("Copied: "));
+    if verbose {
+        for line in transferred.lines() {
+            println!("{}/{}", dst_dir.display(), line.trim_start_matches("Copied: "));
+        }
     }
 
     if !output.status.success() {
@@ -317,13 +327,15 @@ fn read_dir_entries(dir: &Path) -> Result<Vec<PathBuf>, DotSyncError> {
         .collect()
 }
 
-fn copy_file(source: &Path, destination: &Path, dry_run: bool) -> Result<(), DotSyncError> {
+fn copy_file(source: &Path, destination: &Path, dry_run: bool, verbose: bool) -> Result<(), DotSyncError> {
     if dry_run {
-        println!(
-            "[dry-run] Would copy: {} -> {}",
-            source.display(),
-            destination.display()
-        );
+        if verbose {
+            println!(
+                "[dry-run] Would copy: {} -> {}",
+                source.display(),
+                destination.display()
+            );
+        }
         return Ok(());
     }
 
@@ -343,7 +355,9 @@ fn copy_file(source: &Path, destination: &Path, dry_run: bool) -> Result<(), Dot
         source: source_error,
     })?;
 
-    println!("Copied: {} -> {}", source.display(), destination.display());
+    if verbose {
+        println!("Copied: {} -> {}", source.display(), destination.display());
+    }
 
     Ok(())
 }

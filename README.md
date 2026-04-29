@@ -7,13 +7,13 @@ Rust CLI and library for synchronizing dotfiles with a `stow`-style structure.
 Applying from origin to destination is the default behavior:
 
 ```bash
-dotsync [options] --origin <origin_dir> --destination <destination_dir>
+dotsync <origin_dir> <destination_dir> [options]
 ```
 
 To synchronize in reverse, from destination back to origin:
 
 ```bash
-dotsync [options] --reverse --origin <origin_dir> --destination <destination_dir>
+dotsync <origin_dir> <destination_dir> --reverse [options]
 ```
 
 ### What each mode does
@@ -24,7 +24,11 @@ Copies files from `origin` (your repo) to `destination` (your machine), file by 
 Only the files that exist in the repo are touched — nothing else on your machine is affected.
 
 ```bash
+# Files inside ~/.config
 dotsync $HOME/dotfiles/config/.config/ ~/.config
+
+# Dotfiles at the root of $HOME (.zshrc, .gitconfig, etc.)
+dotsync $HOME/dotfiles/dot/ ~/
 ```
 
 #### Reverse
@@ -42,57 +46,22 @@ so you can capture changes made by apps and commit them.
 dotsync $HOME/dotfiles/config/.config/ ~/.config --reverse
 ```
 
-#### git clean and --no-clean
-
-By default, after syncing, `dotsync` runs `git clean -fdX .` inside `origin` to remove
-files that are git-ignored. This keeps the repo clean of build artifacts and generated files.
-
-Before running the destructive clean, `dotsync` first runs `git clean -ndX .` (dry-run)
-and prints what would be removed, so you can see what is about to be deleted.
-
-**If you want to keep the newly captured files**, run with `--no-clean`:
-
-```bash
-dotsync $HOME/dotfiles/config/.config/ ~/.config --reverse --no-clean
-```
-
-Without `--no-clean`, any file not tracked by git and matching `.gitignore` rules will be
-deleted after the sync — including files you just captured from `destination`.
-
-Positional paths are also supported:
-
-```bash
-# Default apply mode
-dotsync [options] <origin_dir> <destination_dir>
-
-# Explicit reverse mode
-dotsync [options] reverse <origin_dir> <destination_dir>
-```
-
 Direction:
 
 - No command: copies from `origin` to `destination`.
-- `--reverse` or `reverse`: copies from `destination` to `origin`, following the structure of `origin`.
+- `--reverse`: copies from `destination` to `origin`, following the structure of `origin`.
 
 For dotfiles, usually:
 
 - `origin`: your dotfiles repository, for example `$HOME/dotfiles`.
 - `destination`: the system/home directory you sync against, for example `$HOME`.
 
-Legacy aliases:
-
-- `apply`: explicit alias for the default mode.
-- `backup`: legacy alias for `reverse`.
-- `capture`: legacy alias for `reverse`.
-- `--backup`: legacy alias for `--reverse`.
-- `--repo`: legacy alias for `--origin`.
-- `--home`: legacy alias for `--destination`.
-
 Options:
 
-- `-n`, `--dry-run`: shows what would happen without copying files or running cleanup.
+- `-n`, `--dry-run`: shows what would happen without copying files.
+- `-v`, `--verbose`: shows detailed output of operations.
 - `--reverse`: enables reverse mode.
-- `--no-clean`: avoids running `git clean -fdX .` at the end.
+- `--reverse-only-files`: enables reverse mode but only copies files, skipping folders.
 - `--origin <path>`: origin directory path.
 - `--destination <path>`: destination directory path.
 - `--dest <path>`: short alias for `--destination`.
@@ -117,12 +86,6 @@ dotsync --reverse --origin $HOME/dotfiles --destination $HOME
 # Alternative reverse form
 dotsync reverse $HOME/dotfiles $HOME
 ```
-
-Notes:
-
-- `.git` directories are skipped.
-- By default, `git clean -fdX .` runs inside the origin directory at the end.
-- In `--dry-run`, no directories are created, no files are copied, and `git clean` is not executed.
 
 ## Installation with curl
 

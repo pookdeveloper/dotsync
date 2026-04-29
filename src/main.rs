@@ -67,6 +67,7 @@ fn run() -> Result<(), AppError> {
 
 fn parse_arguments(args: impl IntoIterator<Item = String>) -> Result<SyncOptions, AppError> {
     let mut dry_run = false;
+    let mut verbose = false;
     let mut reverse_flag = false;
     let mut reverse_only_files = false;
     let mut command = None;
@@ -81,40 +82,26 @@ fn parse_arguments(args: impl IntoIterator<Item = String>) -> Result<SyncOptions
             "-h" | "--help" => return Err(AppError::Help),
             "--version" => return Err(AppError::Version),
             "-n" | "--dry-run" => dry_run = true,
-            "--reverse" | "--backup" => reverse_flag = true,
+            "-v" | "--verbose" => verbose = true,
+            "--reverse" => reverse_flag = true,
             "--reverse-only-files" => {
                 reverse_flag = true;
                 reverse_only_files = true;
             }
-            "--origin" | "--repo" | "--dotfiles" | "--dotfiles-dir" => {
+            "--origin" => {
                 origin_dir = Some(next_option_value(&mut args, arg.as_str())?);
             }
-            "--destination" | "--dest" | "--home" | "--home-dir" => {
+            "--destination" | "--dest" => {
                 destination_dir = Some(next_option_value(&mut args, arg.as_str())?);
             }
             value if value.starts_with("--origin=") => {
                 origin_dir = Some(value["--origin=".len()..].to_string());
-            }
-            value if value.starts_with("--repo=") => {
-                origin_dir = Some(value["--repo=".len()..].to_string());
-            }
-            value if value.starts_with("--dotfiles=") => {
-                origin_dir = Some(value["--dotfiles=".len()..].to_string());
-            }
-            value if value.starts_with("--dotfiles-dir=") => {
-                origin_dir = Some(value["--dotfiles-dir=".len()..].to_string());
             }
             value if value.starts_with("--destination=") => {
                 destination_dir = Some(value["--destination=".len()..].to_string());
             }
             value if value.starts_with("--dest=") => {
                 destination_dir = Some(value["--dest=".len()..].to_string());
-            }
-            value if value.starts_with("--home=") => {
-                destination_dir = Some(value["--home=".len()..].to_string());
-            }
-            value if value.starts_with("--home-dir=") => {
-                destination_dir = Some(value["--home-dir=".len()..].to_string());
             }
             value if value.starts_with('-') => {
                 return Err(AppError::Usage(format!("Unknown option: {value}")))
@@ -130,11 +117,12 @@ fn parse_arguments(args: impl IntoIterator<Item = String>) -> Result<SyncOptions
 
     Ok(SyncOptions::new(mode, origin_dir, destination_dir)
         .with_dry_run(dry_run)
+        .with_verbose(verbose)
         .with_reverse_only_files(reverse_only_files))
 }
 
 fn is_mode_alias(value: &str) -> bool {
-    matches!(value, "apply" | "reverse" | "backup" | "capture")
+    matches!(value, "reverse")
 }
 
 fn resolve_mode(command: Option<String>, reverse_flag: bool) -> Result<Mode, AppError> {
@@ -144,10 +132,6 @@ fn resolve_mode(command: Option<String>, reverse_flag: bool) -> Result<Mode, App
     };
 
     match (command_mode, reverse_flag) {
-        (Some(Mode::Apply), true) => Err(AppError::Usage(
-            "Do not combine the 'apply' alias with --reverse/--backup. Choose one direction."
-                .to_string(),
-        )),
         (Some(mode), _) => Ok(mode),
         (None, true) => Ok(Mode::Reverse),
         (None, false) => Ok(Mode::Apply),
@@ -219,18 +203,11 @@ fn print_usage() {
     eprintln!("  no command               Apply from origin to destination.");
     eprintln!("  --reverse                Copy from destination to origin (full dir sync).");
     eprintln!("  --reverse-only-files     Copy from destination to origin (existing files only).");
-    eprintln!("  reverse                  Equivalent to --reverse.");
-    eprintln!();
-    eprintln!("Legacy aliases:");
-    eprintln!("  apply               Explicit alias for the default mode.");
-    eprintln!("  backup              Legacy alias for reverse.");
-    eprintln!("  capture             Legacy alias for reverse.");
-    eprintln!("  --backup            Legacy alias for --reverse.");
-    eprintln!("  --repo              Legacy alias for --origin.");
-    eprintln!("  --home              Legacy alias for --destination.");
+    eprintln!("  reverse                  Subcommand equivalent to --reverse.");
     eprintln!();
     eprintln!("Options:");
     eprintln!("  -n, --dry-run            Show what would happen without copying files.");
+    eprintln!("  -v, --verbose            Print each copied file (warnings always shown).");
     eprintln!("      --reverse            Enable reverse synchronization.");
     eprintln!("      --reverse-only-files Enable reverse sync for existing files only.");
     eprintln!("      --origin <path>      Origin directory path.");
