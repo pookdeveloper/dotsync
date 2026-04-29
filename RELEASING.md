@@ -7,6 +7,18 @@ This document outlines the steps to create a new release for the `dotsync` proje
 ### 1. Ensure Your Code is Ready for Release
    - Verify all changes are committed and pushed to the `main` branch.
 
+### 2. Bump the Version
+   - Update the version in `Cargo.toml`:
+     ```toml
+     version = "X.Y.Z"
+     ```
+   - Commit both `Cargo.toml` and `Cargo.lock` together:
+     ```bash
+     git add Cargo.toml Cargo.lock
+     git commit -m "chore: bump version to X.Y.Z"
+     git push
+     ```
+
 ### 2. Build the Project
    - Compile the project in release mode to generate the binary:
      ```bash
@@ -36,15 +48,23 @@ This document outlines the steps to create a new release for the `dotsync` proje
      ```
      Replace `X.Y.Z` with the version number and update the release notes.
 
-### Example for v0.1.0
+### Example for v0.2.0
 ```bash
-git tag -a v0.1.0 -m "Release v0.1.0"
-git push origin v0.1.0
+# 1. Bump version in Cargo.toml, then:
+git add Cargo.toml Cargo.lock
+git commit -m "chore: bump version to 0.2.0"
+git push
+
+# 2. Build and package
 cargo build --release
-tar -czvf dotsync-v0.1.0.tar.gz -C target/release dotsync
-gh release create v0.1.0 dotsync-v0.1.0.tar.gz \
-  --title "Release v0.1.0" \
-  --notes "Initial release of dotsync. Includes CLI and library for applying and reversing dotfile sync."
+tar -czvf dotsync-v0.2.0.tar.gz -C target/release dotsync
+
+# 3. Tag and release
+git tag -a v0.2.0 -m "Release v0.2.0"
+git push origin v0.2.0
+gh release create v0.2.0 dotsync-v0.2.0.tar.gz \
+  --title "Release v0.2.0" \
+  --notes "Release notes here."
 ```
 
 This process ensures a smooth release with the correct binary attached to the release notes. For any issues, verify the GitHub CLI (`gh`) is authenticated and the repository has write permissions enabled.
