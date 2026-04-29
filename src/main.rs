@@ -3,7 +3,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use dotsync::{sync_dotfiles, CleanStatus, DotSyncError, Mode, SyncOptions, SyncReport};
+use dotsync::{sync_dotfiles, DotSyncError, Mode, SyncOptions, SyncReport};
 
 #[derive(Debug)]
 enum AppError {
@@ -50,7 +50,7 @@ fn run() -> Result<(), AppError> {
     let options = parse_arguments(env::args().skip(1))?;
     let report = sync_dotfiles(&options)?;
 
-    // print_report(&report, &options);
+    print_report(&report, &options);
 
     println!(
         "Files processed successfully with '{}'.",
@@ -62,8 +62,8 @@ fn run() -> Result<(), AppError> {
 
 fn parse_arguments(args: impl IntoIterator<Item = String>) -> Result<SyncOptions, AppError> {
     let mut dry_run = false;
-    let mut clean_ignored_files = true;
     let mut reverse_flag = false;
+    let mut reverse_only_files = false;
     let mut command = None;
     let mut origin_dir = None;
     let mut destination_dir = None;
@@ -77,7 +77,10 @@ fn parse_arguments(args: impl IntoIterator<Item = String>) -> Result<SyncOptions
             "--version" => return Err(AppError::Version),
             "-n" | "--dry-run" => dry_run = true,
             "--reverse" | "--backup" => reverse_flag = true,
-            "--no-clean" => clean_ignored_files = false,
+            "--reverse-only-files" => {
+                reverse_flag = true;
+                reverse_only_files = true;
+            }
             "--origin" | "--repo" | "--dotfiles" | "--dotfiles-dir" => {
                 origin_dir = Some(next_option_value(&mut args, arg.as_str())?);
             }
@@ -122,7 +125,7 @@ fn parse_arguments(args: impl IntoIterator<Item = String>) -> Result<SyncOptions
 
     Ok(SyncOptions::new(mode, origin_dir, destination_dir)
         .with_dry_run(dry_run)
-        .with_clean_ignored_files(clean_ignored_files))
+        .with_reverse_only_files(reverse_only_files))
 }
 
 fn is_mode_alias(value: &str) -> bool {
@@ -233,29 +236,6 @@ fn print_report(report: &SyncReport, options: &SyncOptions) {
         );
     }
 
-    match &report.clean_status {
-        CleanStatus::Planned { directory } => {
-            println!(
-                "[dry-run] Would run: git clean -fdX . in {}",
-                directory.display()
-            );
-        }
-        CleanStatus::Executed {
-            directory,
-            stdout,
-            stderr,
-        } => {
-            println!("Running: git clean -fdX . in {} (This ignores copying files that are excluded) ", directory.display());
-            print_command_output(stdout);
-            print_command_output(stderr);
-        }
-        CleanStatus::Skipped => {
-            if !options.clean_ignored_files {
-                println!("Cleanup skipped by --no-clean.");
-            }
-        }
-    }
-
     if report.dry_run {
         println!(
             "[dry-run] Summary: {} planned copies, {} skipped files, {} skipped symlinks.",
@@ -273,13 +253,6 @@ fn print_report(report: &SyncReport, options: &SyncOptions) {
     }
 }
 
-fn print_command_output(output: &str) {
-    if output.is_empty() {
-        return;
-    }
-
-    print!("{output}");
-}
 
 fn print_usage() {
     eprintln!("Usage:");

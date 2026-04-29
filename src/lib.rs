@@ -45,7 +45,9 @@ pub struct SyncOptions {
     pub origin_dir: PathBuf,
     pub destination_dir: PathBuf,
     pub dry_run: bool,
-    pub clean_ignored_files: bool,
+    /// When true, reverse mode copies only the exact files present in `origin_dir`,
+    /// file by file, instead of syncing entire directories with rsync.
+    pub reverse_only_files: bool,
 }
 
 impl SyncOptions {
@@ -59,7 +61,7 @@ impl SyncOptions {
             origin_dir: origin_dir.into(),
             destination_dir: destination_dir.into(),
             dry_run: false,
-            clean_ignored_files: true,
+            reverse_only_files: false,
         }
     }
 
@@ -68,8 +70,8 @@ impl SyncOptions {
         self
     }
 
-    pub fn with_clean_ignored_files(mut self, clean_ignored_files: bool) -> Self {
-        self.clean_ignored_files = clean_ignored_files;
+    pub fn with_reverse_only_files(mut self, reverse_only_files: bool) -> Self {
+        self.reverse_only_files = reverse_only_files;
         self
     }
 }
@@ -82,20 +84,6 @@ pub struct CopyOperation {
     pub executed: bool,
 }
 
-/// Git ignored-file cleanup status.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CleanStatus {
-    Planned {
-        directory: PathBuf,
-    },
-    Executed {
-        directory: PathBuf,
-        stdout: String,
-        stderr: String,
-    },
-    Skipped,
-}
-
 /// Accumulated synchronization result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncReport {
@@ -104,7 +92,6 @@ pub struct SyncReport {
     pub skipped_missing_files: Vec<PathBuf>,
     /// Symlinks encountered during reverse mode — skipped intentionally.
     pub skipped_symlinks: Vec<PathBuf>,
-    pub clean_status: CleanStatus,
 }
 
 impl SyncReport {
@@ -173,7 +160,7 @@ impl std::error::Error for DotSyncError {
 
 /// Synchronizes dotfiles according to the provided options.
 ///
-/// In `dry_run`, it does not create directories, copy files, or run `git clean`.
+/// In `dry_run`, it does not create directories or copy files.
 pub fn sync_dotfiles(options: &SyncOptions) -> Result<SyncReport, DotSyncError> {
     validate_origin_dir(&options.origin_dir)?;
 
@@ -182,7 +169,6 @@ pub fn sync_dotfiles(options: &SyncOptions) -> Result<SyncReport, DotSyncError> 
         copy_operations: Vec::new(),
         skipped_missing_files: Vec::new(),
         skipped_symlinks: Vec::new(),
-        clean_status: CleanStatus::Skipped,
     };
 
     match options.mode {
@@ -194,8 +180,6 @@ pub fn sync_dotfiles(options: &SyncOptions) -> Result<SyncReport, DotSyncError> 
         )?,
         Mode::Reverse => process_reverse_root(options, &mut report)?,
     }
-
-    apply_clean_policy(options, &mut report)?;
 
     Ok(report)
 }
@@ -246,8 +230,8 @@ fn process_apply(
 ///
 /// - Only entries that exist in `origin_dir` are considered — this is the
 ///   whitelist. If `.trunk` is not in the repo, it will never be touched.
-/// - Directories found in `origin_dir` are copied **entirely** from
-///   `destination_dir`, capturing new files the app may have added.
+/// - Directories: if `reverse_only_files` is set, rsync uses `--existing` to
+///   update only files already in the repo; otherwise full sync captures new files too.
 /// - If an entry does not exist in `destination_dir`, it is skipped.
 /// - Symlinks are skipped and recorded in the report.
 fn process_reverse_root(
@@ -283,7 +267,7 @@ fn process_reverse_root(
         let dest = options.origin_dir.join(relative_path);
 
         if source.is_dir() {
-            copy_dir_all(&source, &dest, options.dry_run, report)?;
+            copy_dir_all(&source, &dest, options.dry_run, options.reverse_only_files, report)?;
         } else {
             copy_file(&source, &dest, options.dry_run, report)?;
         }
@@ -296,19 +280,20 @@ fn process_reverse_root(
 ///
 /// `-a` (archive) is recursive and preserves permissions and timestamps.
 /// `--no-links` skips symlinks — they are machine-local and meaningless in a repo.
-/// The trailing slash on `src` makes rsync copy the contents of `src` directly
-/// into `dst`, not nest `src` as a subdirectory inside `dst`.
+/// `only_existing` adds `--existing`, which makes rsync update only files that
+/// already exist in `dst_dir`, never creating new ones.
 fn copy_dir_all(
     src_dir: &Path,
     dst_dir: &Path,
     dry_run: bool,
+    only_existing: bool,
     report: &mut SyncReport,
 ) -> Result<(), DotSyncError> {
-    // report.copy_operations.push(CopyOperation {
-    //     source: src_dir.to_path_buf(),
-    //     destination: dst_dir.to_path_buf(),
-    //     executed: !dry_run,
-    // });
+    report.copy_operations.push(CopyOperation {
+        source: src_dir.to_path_buf(),
+        destination: dst_dir.to_path_buf(),
+        executed: !dry_run,
+    });
 
     if dry_run {
         return Ok(());
@@ -325,12 +310,18 @@ fn copy_dir_all(
     // not nest src itself inside dst (rsync semantics).
     let src_with_slash = format!("{}/", src_dir.display());
 
+    let mut args = vec![
+        "-a",                      // archive: recursive + preserve permissions/times
+        "--no-links",              // skip symlinks entirely
+        "--out-format=Copied: %n", // print each transferred file
+    ];
+
+    if only_existing {
+        args.push("--existing"); // never create new files in dst
+    }
+
     let output = Command::new("rsync")
-        .args([
-            "-a",                      // archive: recursive + preserve permissions/times
-            "--no-links",              // skip symlinks entirely
-            "--out-format=Copied: %n", // print each transferred file
-        ])
+        .args(&args)
         .arg(&src_with_slash)
         .arg(dst_dir)
         .output()
@@ -341,10 +332,10 @@ fn copy_dir_all(
 
     // Print each file rsync transferred, prefixing with the dst base path
     // so the output is consistent with copy_file logs.
-    let transferred = String::from_utf8_lossy(&output.stdout);
-    for line in transferred.lines() {
-        println!("{}/{}", dst_dir.display(), line.trim_start_matches("Copied: "));
-    }
+    // let transferred = String::from_utf8_lossy(&output.stdout);
+    // for line in transferred.lines() {
+    //     println!("{}/{}", dst_dir.display(), line.trim_start_matches("Copied: "));
+    // }
 
     if !output.status.success() {
         return Err(DotSyncError::CommandFailed {
@@ -391,7 +382,7 @@ fn copy_file(
             })?;
         }
 
-        print!("Copying '{}' to '{}'", source.display(), destination.display());
+        print!("Copied: {} -> {}\n", source.display(), destination.display());
         fs::copy(source, destination).map_err(|source_error| DotSyncError::Io {
             context: format!(
                 "Could not copy '{}' to '{}'",
@@ -402,78 +393,11 @@ fn copy_file(
         })?;
     }
 
-    // report.copy_operations.push(CopyOperation {
-    //     source: source.to_path_buf(),
-    //     destination: destination.to_path_buf(),
-    //     executed: !dry_run,
-    // });
-
-    Ok(())
-}
-
-fn apply_clean_policy(options: &SyncOptions, report: &mut SyncReport) -> Result<(), DotSyncError> {
-    if !options.clean_ignored_files {
-        report.clean_status = CleanStatus::Skipped;
-        return Ok(());
-    }
-
-    if options.dry_run {
-        report.clean_status = CleanStatus::Planned {
-            directory: options.origin_dir.clone(),
-        };
-        return Ok(());
-    }
-
-    // Preview what will be deleted before doing it, so the user can see
-    // what files are about to be removed (e.g. newly captured files).
-    let preview = Command::new("git")
-        .args(["clean", "-ndX", "."])
-        .current_dir(&options.origin_dir)
-        .output()
-        .map_err(|source| DotSyncError::Io {
-            context: "Could not execute 'git clean -ndX .'".to_string(),
-            source,
-        })?;
-
-    // let preview_stdout = String::from_utf8_lossy(&preview.stdout).to_string();
-    // if !preview_stdout.is_empty() {
-    //     println!("\nThe following git-ignored files will be removed (use --no-clean to keep them):");
-    //     print!("{preview_stdout}");
-    // }
-
-    let output = Command::new("git")
-        .args(["clean", "-fdX", "."])
-        .current_dir(&options.origin_dir)
-        .output()
-        .map_err(|source| DotSyncError::Io {
-            context: "Could not execute 'git clean -fdX .'".to_string(),
-            source,
-        })?;
-
-    if !output.status.success() {
-        // git clean exits with status 1 when it cannot remove some files due
-        // to permission errors (e.g. read-only cache dirs). These are warnings,
-        // not hard failures — print stderr and continue instead of aborting.
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.lines().all(|l| l.starts_with("warning:")) {
-            eprintln!("Warning: git clean could not remove some files (permission denied):");
-            eprint!("{stderr}");
-        } else {
-            return Err(DotSyncError::CommandFailed {
-                command: "git clean -fdX .".to_string(),
-                status: output
-                    .status
-                    .code()
-                    .map_or_else(|| "unknown".to_string(), |code| code.to_string()),
-            });
-        }
-    }
-
-    report.clean_status = CleanStatus::Executed {
-        directory: options.origin_dir.clone(),
-        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-    };
+    report.copy_operations.push(CopyOperation {
+        source: source.to_path_buf(),
+        destination: destination.to_path_buf(),
+        executed: !dry_run,
+    });
 
     Ok(())
 }
