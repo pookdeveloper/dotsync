@@ -50,7 +50,7 @@ fn run() -> Result<(), AppError> {
     let options = parse_arguments(env::args().skip(1))?;
     let report = sync_dotfiles(&options)?;
 
-    print_report(&report, &options);
+    // print_report(&report, &options);
 
     println!(
         "Files processed successfully with '{}'.",
@@ -204,9 +204,11 @@ fn print_report(report: &SyncReport, options: &SyncOptions) {
 
     for operation in &report.copy_operations {
         if operation.executed {
-            // println!("Copying from {} to {} \n", operation.source.display(), operation.destination.display());
-            // println!("Files:");
-            println!("{}", operation.destination.display());
+            println!(
+                "Copied: {} -> {}",
+                operation.source.display(),
+                operation.destination.display()
+            );
         } else {
             println!(
                 "[dry-run] Would copy: {} -> {}",
@@ -221,6 +223,13 @@ fn print_report(report: &SyncReport, options: &SyncOptions) {
             "Warning: file {} was not found in {}. It will be skipped.",
             relative_path.display(),
             options.destination_dir.display()
+        );
+    }
+
+    for symlink_path in &report.skipped_symlinks {
+        eprintln!(
+            "Warning: skipping symlink '{}'.",
+            symlink_path.display()
         );
     }
 
@@ -249,15 +258,17 @@ fn print_report(report: &SyncReport, options: &SyncOptions) {
 
     if report.dry_run {
         println!(
-            "[dry-run] Summary: {} planned copies, {} skipped files.",
+            "[dry-run] Summary: {} planned copies, {} skipped files, {} skipped symlinks.",
             report.planned_copies(),
-            report.skipped_missing_files.len()
+            report.skipped_missing_files.len(),
+            report.skipped_symlinks.len()
         );
     } else {
         println!(
-            "Summary: {} executed copies, {} skipped files.",
+            "Summary: {} executed copies, {} skipped files, {} skipped symlinks.",
             report.executed_copies(),
-            report.skipped_missing_files.len()
+            report.skipped_missing_files.len(),
+            report.skipped_symlinks.len()
         );
     }
 }

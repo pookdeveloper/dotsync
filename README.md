@@ -16,12 +16,48 @@ To synchronize in reverse, from destination back to origin:
 dotsync [options] --reverse --origin <origin_dir> --destination <destination_dir>
 ```
 
-### What the reverse mode does
+### What each mode does
 
-The **reverse mode** synchronizes files from `destination` back to `origin` (your dotfiles repository).
+#### Apply (default)
 
-- Only iterates files already present in `origin`, so nothing unexpected is pulled from `destination`.
-- Uses the same diff logic as the default mode — no copies unless the content actually differs.
+Copies files from `origin` (your repo) to `destination` (your machine), file by file.
+Only the files that exist in the repo are touched — nothing else on your machine is affected.
+
+```bash
+dotsync $HOME/dotfiles/config/.config/ ~/.config
+```
+
+#### Reverse
+
+Copies files and folders from `destination` (your machine) back to `origin` (your repo),
+so you can capture changes made by apps and commit them.
+
+- **Files** in `origin` are copied individually from `destination`.
+- **Folders** in `origin` are synced entirely from `destination` using `rsync`, capturing
+  any new files the app may have created inside them.
+- Entries not present in `origin` are never touched — your repo is always the whitelist.
+- Symlinks are skipped (they are machine-local and meaningless in a repo).
+
+```bash
+dotsync $HOME/dotfiles/config/.config/ ~/.config --reverse
+```
+
+#### git clean and --no-clean
+
+By default, after syncing, `dotsync` runs `git clean -fdX .` inside `origin` to remove
+files that are git-ignored. This keeps the repo clean of build artifacts and generated files.
+
+Before running the destructive clean, `dotsync` first runs `git clean -ndX .` (dry-run)
+and prints what would be removed, so you can see what is about to be deleted.
+
+**If you want to keep the newly captured files**, run with `--no-clean`:
+
+```bash
+dotsync $HOME/dotfiles/config/.config/ ~/.config --reverse --no-clean
+```
+
+Without `--no-clean`, any file not tracked by git and matching `.gitignore` rules will be
+deleted after the sync — including files you just captured from `destination`.
 
 Positional paths are also supported:
 
