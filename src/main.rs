@@ -65,7 +65,7 @@ fn run() -> Result<(), AppError> {
                 options.destination_dir.display()
             );
             sync_dotfiles(&options)?;
-            println!("\nDone. Mode: '{}'.", options.mode.as_str());
+            println!("\nDone. Mode: '{}'.", options.mode);
         }
         CliCommand::Apply { path, dry_run, verbose } => {
             let repo = require_destination()?;
@@ -158,26 +158,35 @@ fn parse_arguments(args: impl IntoIterator<Item = String>) -> Result<CliCommand,
     let first_positional = args.iter().find(|a| !a.starts_with('-')).map(String::as_str);
 
     match first_positional {
-        Some("apply") => parse_apply_command(&args),
-
-        Some("config") => parse_config_command(&args),
-        Some("add") => parse_add_command(&args),
-        Some("readd") => parse_readd_command(&args),
+        Some("apply") => parse_apply_command(&skip_command(&args, "apply")),
+        Some("config") => parse_config_command(&skip_command(&args, "config")),
+        Some("add") => parse_add_command(&skip_command(&args, "add")),
+        Some("readd") => parse_readd_command(&skip_command(&args, "readd")),
         _ => parse_sync_command(args).map(CliCommand::Sync),
     }
+}
+
+fn skip_command(args: &[String], cmd: &str) -> Vec<String> {
+    let mut skipped = false;
+    args.iter()
+        .filter(|a| {
+            if !skipped && a.as_str() == cmd {
+                skipped = true;
+                false
+            } else {
+                true
+            }
+        })
+        .cloned()
+        .collect()
 }
 
 fn parse_apply_command(args: &[String]) -> Result<CliCommand, AppError> {
     let mut dry_run = false;
     let mut verbose = false;
     let mut path: Option<PathBuf> = None;
-    let mut seen_command = false;
 
     for arg in args {
-        if arg == "apply" && !seen_command {
-            seen_command = true;
-            continue;
-        }
         match arg.as_str() {
             "-n" | "--dry-run" => dry_run = true,
             "-v" | "--verbose" => verbose = true,
@@ -198,13 +207,8 @@ fn parse_apply_command(args: &[String]) -> Result<CliCommand, AppError> {
 
 fn parse_config_command(args: &[String]) -> Result<CliCommand, AppError> {
     let mut positional: Vec<&str> = Vec::new();
-    let mut seen_command = false;
 
     for arg in args {
-        if arg == "config" && !seen_command {
-            seen_command = true;
-            continue;
-        }
         if !arg.starts_with('-') {
             positional.push(arg.as_str());
         }
@@ -225,13 +229,8 @@ fn parse_add_command(args: &[String]) -> Result<CliCommand, AppError> {
     let mut dry_run = false;
     let mut verbose = false;
     let mut positional: Vec<&str> = Vec::new();
-    let mut seen_command = false;
 
     for arg in args {
-        if arg == "add" && !seen_command {
-            seen_command = true;
-            continue;
-        }
         match arg.as_str() {
             "-n" | "--dry-run" => dry_run = true,
             "-v" | "--verbose" => verbose = true,
@@ -259,13 +258,8 @@ fn parse_readd_command(args: &[String]) -> Result<CliCommand, AppError> {
     let mut dirs = false;
     let mut dry_run = false;
     let mut verbose = false;
-    let mut seen_command = false;
 
     for arg in args {
-        if arg == "readd" && !seen_command {
-            seen_command = true;
-            continue;
-        }
         match arg.as_str() {
             "--dirs" => dirs = true,
             "-n" | "--dry-run" => dry_run = true,
@@ -343,15 +337,10 @@ fn is_mode_alias(value: &str) -> bool {
 }
 
 fn resolve_mode(command: Option<String>, reverse_flag: bool) -> Result<Mode, AppError> {
-    let command_mode = match command {
-        Some(command) => Some(Mode::from_str(&command)?),
-        None => None,
-    };
-
-    match (command_mode, reverse_flag) {
-        (Some(mode), _) => Ok(mode),
-        (None, true) => Ok(Mode::Reverse),
-        (None, false) => Ok(Mode::Apply),
+    match command {
+        Some(cmd) => Ok(Mode::from_str(&cmd)?),
+        None if reverse_flag => Ok(Mode::Reverse),
+        None => Ok(Mode::Apply),
     }
 }
 

@@ -16,21 +16,19 @@ pub fn read_destination() -> Option<PathBuf> {
 }
 
 fn parse_destination(content: &str) -> Option<PathBuf> {
-    for line in content.lines() {
+    content.lines().find_map(|line| {
         let line = line.trim();
         if line.starts_with('#') || line.is_empty() {
-            continue;
+            return None;
         }
-        if let Some(rest) = line.strip_prefix("destination") {
-            if let Some(value) = rest.trim().strip_prefix('=') {
-                let value = value.trim().trim_matches('"');
-                if !value.is_empty() {
-                    return Some(PathBuf::from(value));
-                }
-            }
-        }
-    }
-    None
+        let value = line
+            .strip_prefix("destination")?
+            .trim()
+            .strip_prefix('=')?
+            .trim()
+            .trim_matches('"');
+        (!value.is_empty()).then(|| PathBuf::from(value))
+    })
 }
 
 pub fn write_destination(destination: &Path) -> Result<(), String> {

@@ -39,6 +39,12 @@ impl FromStr for Mode {
     }
 }
 
+impl fmt::Display for Mode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Public synchronization options.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncOptions {
@@ -312,8 +318,7 @@ fn collect_leaf_files(
     units: &mut BTreeSet<PathBuf>,
 ) -> Result<(), DotSyncError> {
     for entry in read_dir_entries(current)? {
-        let name = entry.file_name();
-        if name == Some(OsStr::new(".git")) || name == Some(OsStr::new(".dotsyncignore")) {
+        if is_internal_entry(&entry) {
             continue;
         }
 
@@ -379,6 +384,13 @@ pub fn sync_dotfiles(options: &SyncOptions) -> Result<(), DotSyncError> {
     Ok(())
 }
 
+fn is_internal_entry(path: &Path) -> bool {
+    matches!(
+        path.file_name(),
+        Some(n) if n == OsStr::new(".git") || n == OsStr::new(".dotsyncignore")
+    )
+}
+
 fn validate_origin_dir(origin_dir: &Path) -> Result<(), DotSyncError> {
     if !origin_dir.exists() || !origin_dir.is_dir() {
         return Err(DotSyncError::InvalidOriginDir(origin_dir.to_path_buf()));
@@ -397,8 +409,7 @@ fn process_apply(
     let entries = read_dir_entries(current_dir)?;
 
     for full_entry_path in entries {
-        let name = full_entry_path.file_name();
-        if name == Some(OsStr::new(".git")) || name == Some(OsStr::new(".dotsyncignore")) {
+        if is_internal_entry(&full_entry_path) {
             continue;
         }
 
@@ -436,8 +447,7 @@ fn process_reverse_root(options: &SyncOptions, rules: &IgnoreRules) -> Result<()
     let entries = read_dir_entries(&options.origin_dir)?;
 
     for full_origin_path in entries {
-        let name = full_origin_path.file_name();
-        if name == Some(OsStr::new(".git")) || name == Some(OsStr::new(".dotsyncignore")) {
+        if is_internal_entry(&full_origin_path) {
             continue;
         }
 
