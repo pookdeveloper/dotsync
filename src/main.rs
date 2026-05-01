@@ -33,6 +33,7 @@ impl From<DotSyncError> for AppError {
 
 enum CliCommand {
     Sync(SyncOptions),
+    Apply { path: Option<PathBuf>, dry_run: bool, verbose: bool },
     Config(PathBuf),
     Add { source: PathBuf, dry_run: bool, verbose: bool },
     Readd { dirs: bool, dry_run: bool, verbose: bool },
@@ -65,6 +66,37 @@ fn run() -> Result<(), AppError> {
             );
             sync_dotfiles(&options)?;
             println!("\nDone. Mode: '{}'.", options.mode.as_str());
+        }
+        CliCommand::Apply { path, dry_run, verbose } => {
+            let repo = require_destination()?;
+            let home = require_home()?;
+
+            let (origin, destination) = match &path {
+                None => (repo.clone(), home.clone()),
+                Some(p) => {
+                    let origin = repo.join(p);
+                    if !origin.exists() {
+                        return Err(AppError::Usage(format!(
+                            "'{}' not found in repo '{}'.",
+                            p.display(),
+                            repo.display()
+                        )));
+                    }
+                    (origin, home.join(p))
+                }
+            };
+
+            println!("Applying {} to {}\n", origin.display(), destination.display());
+
+            let options = SyncOptions::new(Mode::Apply, &origin, &destination)
+                .with_dry_run(dry_run)
+                .with_verbose(verbose)
+                .with_ignore_root(&repo);
+
+            sync_dotfiles(&options)?;
+            if !dry_run {
+                println!("\nDone.");
+            }
         }
         CliCommand::Config(destination) => {
             config::write_destination(&destination).map_err(AppError::Usage)?;
@@ -126,11 +158,42 @@ fn parse_arguments(args: impl IntoIterator<Item = String>) -> Result<CliCommand,
     let first_positional = args.iter().find(|a| !a.starts_with('-')).map(String::as_str);
 
     match first_positional {
+        Some("apply") => parse_apply_command(&args),
+
         Some("config") => parse_config_command(&args),
         Some("add") => parse_add_command(&args),
         Some("readd") => parse_readd_command(&args),
         _ => parse_sync_command(args).map(CliCommand::Sync),
     }
+}
+
+fn parse_apply_command(args: &[String]) -> Result<CliCommand, AppError> {
+    let mut dry_run = false;
+    let mut verbose = false;
+    let mut path: Option<PathBuf> = None;
+    let mut seen_command = false;
+
+    for arg in args {
+        if arg == "apply" && !seen_command {
+            seen_command = true;
+            continue;
+        }
+        match arg.as_str() {
+            "-n" | "--dry-run" => dry_run = true,
+            "-v" | "--verbose" => verbose = true,
+            value if value.starts_with('-') => {
+                return Err(AppError::Usage(format!("Unknown option: {value}")))
+            }
+            _ if path.is_none() => path = Some(PathBuf::from(arg)),
+            other => {
+                return Err(AppError::Usage(format!(
+                    "'apply' takes at most one path argument, got extra: {other}"
+                )))
+            }
+        }
+    }
+
+    Ok(CliCommand::Apply { path, dry_run, verbose })
 }
 
 fn parse_config_command(args: &[String]) -> Result<CliCommand, AppError> {
@@ -359,6 +422,7 @@ fn absolute_path(value: impl AsRef<Path>) -> Result<PathBuf, AppError> {
 fn print_usage() {
     eprintln!("Usage:");
     eprintln!("  dotsync config <destination_path>");
+    eprintln!("  dotsync apply [-n] [-v] [<path>]");
     eprintln!("  dotsync add [-n] [-v] <path>");
     eprintln!("  dotsync readd [-n] [-v] [--dirs]");
     eprintln!("  dotsync [options] --origin <origin_dir> [--destination <destination_dir>]");
@@ -366,12 +430,14 @@ fn print_usage() {
         "  dotsync [options] --reverse --origin <origin_dir> [--destination <destination_dir>]"
     );
     eprintln!("  dotsync [options] reverse <origin_dir> [<destination_dir>]");
-    eprintln!("  dotsync [options] <origin_dir> [<destination_dir>]");
     eprintln!();
     eprintln!("Configuration:");
     eprintln!("  config <path>            Set default destination (~/.config/dotsync/config.toml).");
     eprintln!();
     eprintln!("Dotfile management:");
+    eprintln!("  apply [<path>]           Apply repo to $HOME (uses configured repo).");
+    eprintln!("                           With <path>: applies only that subdirectory.");
+    eprintln!("                           Example: dotsync apply .config/nvim");
     eprintln!("  add <path>               Copy a dotfile/dir from $HOME into the repo.");
     eprintln!("                           Path is preserved relative to $HOME.");
     eprintln!("  readd                    Re-add every tracked file from $HOME into the repo.");
@@ -379,8 +445,7 @@ fn print_usage() {
     eprintln!("                           Under .config: caps at .config/<app>, never .config itself.");
     eprintln!("                           Elsewhere: copies the immediate parent directory.");
     eprintln!();
-    eprintln!("Sync direction:");
-    eprintln!("  no command               Apply from origin to destination.");
+    eprintln!("Sync direction (advanced):");
     eprintln!("  --reverse                Copy from destination to origin (full dir sync).");
     eprintln!("  --reverse-only-files     Copy from destination to origin (existing files only).");
     eprintln!("  reverse                  Subcommand equivalent to --reverse.");

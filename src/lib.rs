@@ -51,6 +51,9 @@ pub struct SyncOptions {
     pub reverse_only_files: bool,
     /// When true, logs every copied file. Warnings and errors are always shown.
     pub verbose: bool,
+    /// When set, `.dotsyncignore` is loaded from this directory instead of `origin_dir`.
+    /// Needed for scoped applies where `origin_dir` is a subdirectory of the repo.
+    pub ignore_root: Option<PathBuf>,
 }
 
 impl SyncOptions {
@@ -66,6 +69,7 @@ impl SyncOptions {
             dry_run: false,
             reverse_only_files: false,
             verbose: false,
+            ignore_root: None,
         }
     }
 
@@ -81,6 +85,11 @@ impl SyncOptions {
 
     pub fn with_verbose(mut self, verbose: bool) -> Self {
         self.verbose = verbose;
+        self
+    }
+
+    pub fn with_ignore_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.ignore_root = Some(root.into());
         self
     }
 }
@@ -359,7 +368,8 @@ fn effective_dir_unit(relative: &Path) -> PathBuf {
 pub fn sync_dotfiles(options: &SyncOptions) -> Result<(), DotSyncError> {
     validate_origin_dir(&options.origin_dir)?;
 
-    let rules = IgnoreRules::load(&options.origin_dir);
+    let rules_dir = options.ignore_root.as_deref().unwrap_or(&options.origin_dir);
+    let rules = IgnoreRules::load(rules_dir);
 
     match options.mode {
         Mode::Apply => process_apply(&options.origin_dir, &options.origin_dir, options, &rules)?,
