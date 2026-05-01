@@ -16,3 +16,4 @@ name = "dotsync"
 path = "src/main.rs"
 
 [dependencies]
+globset = "0.4"

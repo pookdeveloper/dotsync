@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
@@ -5,6 +6,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr;
+
+mod ignore;
+use ignore::IgnoreRules;
 
 /// Synchronization direction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,6 +89,7 @@ impl SyncOptions {
 pub enum DotSyncError {
     InvalidMode(String),
     InvalidOriginDir(PathBuf),
+    NotUnderHome { source: PathBuf, home: PathBuf },
     RelativePath { path: PathBuf, base: PathBuf },
     Io { context: String, source: io::Error },
     CommandFailed { command: String, status: String },
@@ -106,6 +111,12 @@ impl fmt::Display for DotSyncError {
                     path.display()
                 )
             }
+            Self::NotUnderHome { source, home } => write!(
+                f,
+                "Error: '{}' is not under HOME '{}'.",
+                source.display(),
+                home.display()
+            ),
             Self::RelativePath { path, base } => write!(
                 f,
                 "Could not compute relative path for '{}' from base '{}'",
@@ -129,15 +140,230 @@ impl std::error::Error for DotSyncError {
     }
 }
 
+/// Creates a `.dotsyncignore` file in `repo_dir` with a comment header if one does not
+/// already exist. Called automatically by `dotsync config` to scaffold the file.
+pub fn init_ignore_file(repo_dir: &Path) -> Result<bool, DotSyncError> {
+    let path = repo_dir.join(".dotsyncignore");
+    if path.exists() {
+        return Ok(false);
+    }
+
+    let content = "\
+# .dotsyncignore — paths that dotsync will never copy or apply.
+# Patterns follow gitignore semantics:
+#   - No slash → matches name at any depth        (.DS_Store, *.log)
+#   - With slash → relative to the repo root      (.config/nvim/sessions/)
+#   - Leading /  → anchored to root               (/.zshrc.bak)
+#   - Prefix !   → negate a previous pattern      (!important.log)
+#   - Lines starting with # are comments
+";
+
+    fs::write(&path, content).map_err(|source| DotSyncError::Io {
+        context: format!("Could not create '{}'", path.display()),
+        source,
+    })?;
+
+    Ok(true)
+}
+
+/// Copies a single dotfile or directory from its live location into the repo,
+/// preserving its path relative to `home_dir`.
+///
+/// `dotsync add ~/.config/nvim` with `home_dir=$HOME` and `repo_dir=~/dotfiles`
+/// copies to `~/dotfiles/.config/nvim`.
+pub fn add_dotfile(
+    source: &Path,
+    home_dir: &Path,
+    repo_dir: &Path,
+    dry_run: bool,
+    verbose: bool,
+) -> Result<(), DotSyncError> {
+    if !source.exists() {
+        return Err(DotSyncError::InvalidOriginDir(source.to_path_buf()));
+    }
+
+    let relative = source
+        .strip_prefix(home_dir)
+        .map_err(|_| DotSyncError::NotUnderHome {
+            source: source.to_path_buf(),
+            home: home_dir.to_path_buf(),
+        })?;
+
+    let rules = IgnoreRules::load(repo_dir);
+    if rules.is_ignored(relative) {
+        if verbose {
+            println!("Ignored: {}", source.display());
+        }
+        return Ok(());
+    }
+
+    if source.is_dir() {
+        add_dotfile_dir(source, home_dir, repo_dir, &rules, dry_run, verbose)
+    } else {
+        copy_file(source, &repo_dir.join(relative), dry_run, verbose)
+    }
+}
+
+/// Recursively copies a directory from HOME into the repo, applying ignore rules to
+/// every entry. This replaces the rsync path for `add` so nested patterns are respected.
+fn add_dotfile_dir(
+    source_dir: &Path,
+    home_dir: &Path,
+    repo_dir: &Path,
+    rules: &IgnoreRules,
+    dry_run: bool,
+    verbose: bool,
+) -> Result<(), DotSyncError> {
+    for entry in read_dir_entries(source_dir)? {
+        if entry.is_symlink() {
+            eprintln!("Warning: skipping symlink '{}'.", entry.display());
+            continue;
+        }
+
+        let relative = entry
+            .strip_prefix(home_dir)
+            .map_err(|_| DotSyncError::RelativePath {
+                path: entry.clone(),
+                base: home_dir.to_path_buf(),
+            })?;
+
+        if rules.is_ignored(relative) {
+            if verbose {
+                println!("Ignored: {}", entry.display());
+            }
+            continue;
+        }
+
+        if entry.is_dir() {
+            add_dotfile_dir(&entry, home_dir, repo_dir, rules, dry_run, verbose)?;
+        } else {
+            copy_file(&entry, &repo_dir.join(relative), dry_run, verbose)?;
+        }
+    }
+    Ok(())
+}
+
+/// Re-adds every tracked file in `repo_dir` from `home_dir`, refreshing the repo.
+///
+/// Without `dirs`: re-copies each leaf file individually.
+/// With `dirs`: groups leaf files by their effective directory unit before copying.
+/// Under `.config/`, the unit is capped at `.config/<app>` — never `.config/` itself.
+/// Elsewhere, the unit is the immediate parent directory of the file.
+pub fn readd_dotfiles(
+    repo_dir: &Path,
+    home_dir: &Path,
+    dirs: bool,
+    dry_run: bool,
+    verbose: bool,
+) -> Result<(), DotSyncError> {
+    validate_origin_dir(repo_dir)?;
+
+    let rules = IgnoreRules::load(repo_dir);
+    let units = collect_readd_units(repo_dir, dirs, &rules)?;
+
+    for unit in &units {
+        let source = home_dir.join(unit);
+        let target = repo_dir.join(unit);
+
+        if source.is_symlink() {
+            eprintln!("Warning: skipping symlink '{}'.", source.display());
+            continue;
+        }
+
+        if !source.exists() {
+            eprintln!("Warning: '{}' not found, skipping.", source.display());
+            continue;
+        }
+
+        if source.is_dir() {
+            copy_dir_all(&source, &target, dry_run, false, verbose)?;
+        } else {
+            copy_file(&source, &target, dry_run, verbose)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn collect_readd_units(
+    repo_dir: &Path,
+    dirs: bool,
+    rules: &IgnoreRules,
+) -> Result<BTreeSet<PathBuf>, DotSyncError> {
+    let mut units = BTreeSet::new();
+    collect_leaf_files(repo_dir, repo_dir, dirs, rules, &mut units)?;
+    Ok(units)
+}
+
+fn collect_leaf_files(
+    current: &Path,
+    repo_dir: &Path,
+    dirs: bool,
+    rules: &IgnoreRules,
+    units: &mut BTreeSet<PathBuf>,
+) -> Result<(), DotSyncError> {
+    for entry in read_dir_entries(current)? {
+        let name = entry.file_name();
+        if name == Some(OsStr::new(".git")) || name == Some(OsStr::new(".dotsyncignore")) {
+            continue;
+        }
+
+        let relative =
+            entry
+                .strip_prefix(repo_dir)
+                .map_err(|_| DotSyncError::RelativePath {
+                    path: entry.clone(),
+                    base: repo_dir.to_path_buf(),
+                })?;
+
+        if rules.is_ignored(relative) {
+            continue;
+        }
+
+        if entry.is_dir() {
+            collect_leaf_files(&entry, repo_dir, dirs, rules, units)?;
+        } else {
+            let unit = if dirs {
+                effective_dir_unit(relative)
+            } else {
+                relative.to_path_buf()
+            };
+            units.insert(unit);
+        }
+    }
+
+    Ok(())
+}
+
+/// Determines the copy unit for a file path when `--dirs` is active.
+///
+/// Rules:
+/// - 1 component (file directly in HOME): keep the file.
+/// - Under `.config/`: cap at `.config/<app>`, never `.config/` itself.
+/// - Anywhere else: use the immediate parent directory.
+fn effective_dir_unit(relative: &Path) -> PathBuf {
+    let components: Vec<_> = relative.components().collect();
+
+    match components.as_slice() {
+        [_] => relative.to_path_buf(),
+        [first, second, ..] if first.as_os_str() == ".config" => {
+            Path::new(first.as_os_str()).join(second.as_os_str())
+        }
+        _ => relative.parent().unwrap_or(relative).to_path_buf(),
+    }
+}
+
 /// Synchronizes dotfiles according to the provided options.
 ///
 /// In `dry_run`, it does not create directories or copy files.
 pub fn sync_dotfiles(options: &SyncOptions) -> Result<(), DotSyncError> {
     validate_origin_dir(&options.origin_dir)?;
 
+    let rules = IgnoreRules::load(&options.origin_dir);
+
     match options.mode {
-        Mode::Apply => process_apply(&options.origin_dir, &options.origin_dir, options)?,
-        Mode::Reverse => process_reverse_root(options)?,
+        Mode::Apply => process_apply(&options.origin_dir, &options.origin_dir, options, &rules)?,
+        Mode::Reverse => process_reverse_root(options, &rules)?,
     }
 
     Ok(())
@@ -156,11 +382,13 @@ fn process_apply(
     current_dir: &Path,
     base_dir: &Path,
     options: &SyncOptions,
+    rules: &IgnoreRules,
 ) -> Result<(), DotSyncError> {
     let entries = read_dir_entries(current_dir)?;
 
     for full_entry_path in entries {
-        if full_entry_path.file_name() == Some(OsStr::new(".git")) {
+        let name = full_entry_path.file_name();
+        if name == Some(OsStr::new(".git")) || name == Some(OsStr::new(".dotsyncignore")) {
             continue;
         }
 
@@ -172,8 +400,12 @@ fn process_apply(
                     base: base_dir.to_path_buf(),
                 })?;
 
+        if rules.is_ignored(relative_path) {
+            continue;
+        }
+
         if full_entry_path.is_dir() {
-            process_apply(&full_entry_path, base_dir, options)?;
+            process_apply(&full_entry_path, base_dir, options, rules)?;
         } else {
             let destination = options.destination_dir.join(relative_path);
             copy_file(&full_entry_path, &destination, options.dry_run, options.verbose)?;
@@ -190,11 +422,12 @@ fn process_apply(
 /// - Directories: if `reverse_only_files` is set, rsync uses `--existing` to update
 ///   only files already in the repo; otherwise full sync captures new files too.
 /// - Entries missing from `destination_dir` or that are symlinks are skipped.
-fn process_reverse_root(options: &SyncOptions) -> Result<(), DotSyncError> {
+fn process_reverse_root(options: &SyncOptions, rules: &IgnoreRules) -> Result<(), DotSyncError> {
     let entries = read_dir_entries(&options.origin_dir)?;
 
     for full_origin_path in entries {
-        if full_origin_path.file_name() == Some(OsStr::new(".git")) {
+        let name = full_origin_path.file_name();
+        if name == Some(OsStr::new(".git")) || name == Some(OsStr::new(".dotsyncignore")) {
             continue;
         }
 
@@ -204,6 +437,10 @@ fn process_reverse_root(options: &SyncOptions) -> Result<(), DotSyncError> {
                 path: full_origin_path.clone(),
                 base: options.origin_dir.clone(),
             })?;
+
+        if rules.is_ignored(relative_path) {
+            continue;
+        }
 
         let source = options.destination_dir.join(relative_path);
 
