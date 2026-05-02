@@ -5,56 +5,16 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::str::FromStr;
 
 mod ignore;
 use ignore::IgnoreRules;
 
-/// Synchronization direction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Mode {
-    /// Applies files from origin to destination.
-    Apply,
-    /// Syncs in reverse: from destination back to origin.
-    Reverse,
-}
-
-impl Mode {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Apply => "apply",
-            Self::Reverse => "reverse",
-        }
-    }
-}
-
-impl FromStr for Mode {
-    type Err = DotSyncError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "reverse" => Ok(Self::Reverse),
-            _ => Err(DotSyncError::InvalidMode(value.to_string())),
-        }
-    }
-}
-
-impl fmt::Display for Mode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
 /// Public synchronization options.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncOptions {
-    pub mode: Mode,
     pub origin_dir: PathBuf,
     pub destination_dir: PathBuf,
     pub dry_run: bool,
-    /// When true, reverse mode copies only the exact files present in `origin_dir`,
-    /// using rsync `--existing` so no new files are created in the repo.
-    pub reverse_only_files: bool,
     /// When true, logs every copied file. Warnings and errors are always shown.
     pub verbose: bool,
     /// When set, `.dotsyncignore` is loaded from this directory instead of `origin_dir`.
@@ -64,16 +24,13 @@ pub struct SyncOptions {
 
 impl SyncOptions {
     pub fn new(
-        mode: Mode,
         origin_dir: impl Into<PathBuf>,
         destination_dir: impl Into<PathBuf>,
     ) -> Self {
         Self {
-            mode,
             origin_dir: origin_dir.into(),
             destination_dir: destination_dir.into(),
             dry_run: false,
-            reverse_only_files: false,
             verbose: false,
             ignore_root: None,
         }
@@ -81,11 +38,6 @@ impl SyncOptions {
 
     pub fn with_dry_run(mut self, dry_run: bool) -> Self {
         self.dry_run = dry_run;
-        self
-    }
-
-    pub fn with_reverse_only_files(mut self, reverse_only_files: bool) -> Self {
-        self.reverse_only_files = reverse_only_files;
         self
     }
 
@@ -102,7 +54,6 @@ impl SyncOptions {
 
 #[derive(Debug)]
 pub enum DotSyncError {
-    InvalidMode(String),
     InvalidOriginDir(PathBuf),
     NotUnderHome { source: PathBuf, home: PathBuf },
     RelativePath { path: PathBuf, base: PathBuf },
@@ -113,12 +64,6 @@ pub enum DotSyncError {
 impl fmt::Display for DotSyncError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidMode(mode) => {
-                write!(
-                    f,
-                    "Error: command '{mode}' is not valid. Use 'reverse'."
-                )
-            }
             Self::InvalidOriginDir(path) => {
                 write!(
                     f,
@@ -140,7 +85,7 @@ impl fmt::Display for DotSyncError {
             ),
             Self::Io { context, source } => write!(f, "{context}: {source}"),
             Self::CommandFailed { command, status } => {
-                write!(f, "Command '{command}' failed with status {status}")
+                write!(f, "Command failed with exit code {status}: {command}")
             }
         }
     }
@@ -219,8 +164,6 @@ pub fn add_dotfile(
     }
 }
 
-/// Recursively copies a directory from HOME into the repo, applying ignore rules to
-/// every entry. This replaces the rsync path for `add` so nested patterns are respected.
 fn add_dotfile_dir(
     source_dir: &Path,
     home_dir: &Path,
@@ -258,12 +201,11 @@ fn add_dotfile_dir(
     Ok(())
 }
 
-/// Re-adds every tracked file in `repo_dir` from `home_dir`, refreshing the repo.
+/// Re-adds tracked dotfiles from `home_dir` back into `repo_dir`.
 ///
-/// Without `dirs`: re-copies each leaf file individually.
-/// With `dirs`: groups leaf files by their effective directory unit before copying.
-/// Under `.config/`, the unit is capped at `.config/<app>` — never `.config/` itself.
-/// Elsewhere, the unit is the immediate parent directory of the file.
+/// When `dirs` is false, each tracked file is copied individually.
+/// When `dirs` is true, the parent directory of each tracked file is copied
+/// recursively, which also captures new files in those directories.
 pub fn readd_dotfiles(
     repo_dir: &Path,
     home_dir: &Path,
@@ -318,7 +260,8 @@ fn collect_leaf_files(
     units: &mut BTreeSet<PathBuf>,
 ) -> Result<(), DotSyncError> {
     for entry in read_dir_entries(current)? {
-        if is_internal_entry(&entry) {
+        let name = entry.file_name();
+        if name == Some(OsStr::new(".git")) || name == Some(OsStr::new(".dotsyncignore")) {
             continue;
         }
 
@@ -367,21 +310,14 @@ fn effective_dir_unit(relative: &Path) -> PathBuf {
     }
 }
 
-/// Synchronizes dotfiles according to the provided options.
-///
-/// In `dry_run`, it does not create directories or copy files.
+/// Synchronizes dotfiles from `origin_dir` (repo) to `destination_dir` (home).
 pub fn sync_dotfiles(options: &SyncOptions) -> Result<(), DotSyncError> {
     validate_origin_dir(&options.origin_dir)?;
 
     let rules_dir = options.ignore_root.as_deref().unwrap_or(&options.origin_dir);
     let rules = IgnoreRules::load(rules_dir);
 
-    match options.mode {
-        Mode::Apply => process_apply(&options.origin_dir, &options.origin_dir, options, &rules)?,
-        Mode::Reverse => process_reverse_root(options, &rules)?,
-    }
-
-    Ok(())
+    process_apply(&options.origin_dir, &options.origin_dir, options, &rules)
 }
 
 fn is_internal_entry(path: &Path) -> bool {
@@ -395,20 +331,16 @@ fn validate_origin_dir(origin_dir: &Path) -> Result<(), DotSyncError> {
     if !origin_dir.exists() || !origin_dir.is_dir() {
         return Err(DotSyncError::InvalidOriginDir(origin_dir.to_path_buf()));
     }
-
     Ok(())
 }
 
-/// Apply mode: iterates `origin_dir` and copies each file to `destination_dir`.
 fn process_apply(
     current_dir: &Path,
     base_dir: &Path,
     options: &SyncOptions,
     rules: &IgnoreRules,
 ) -> Result<(), DotSyncError> {
-    let entries = read_dir_entries(current_dir)?;
-
-    for full_entry_path in entries {
+    for full_entry_path in read_dir_entries(current_dir)? {
         if is_internal_entry(&full_entry_path) {
             continue;
         }
@@ -430,62 +362,6 @@ fn process_apply(
         } else {
             let destination = options.destination_dir.join(relative_path);
             copy_file(&full_entry_path, &destination, options.dry_run, options.verbose)?;
-        }
-    }
-
-    Ok(())
-}
-
-/// Reverse mode: iterates `origin_dir` (the repo) and copies each entry from
-/// `destination_dir` (the machine) back into `origin_dir`.
-///
-/// - Only entries that exist in `origin_dir` are considered — the repo is the whitelist.
-/// - Directories: if `reverse_only_files` is set, rsync uses `--existing` to update
-///   only files already in the repo; otherwise full sync captures new files too.
-/// - Entries missing from `destination_dir` or that are symlinks are skipped.
-fn process_reverse_root(options: &SyncOptions, rules: &IgnoreRules) -> Result<(), DotSyncError> {
-    let entries = read_dir_entries(&options.origin_dir)?;
-
-    for full_origin_path in entries {
-        if is_internal_entry(&full_origin_path) {
-            continue;
-        }
-
-        let relative_path = full_origin_path
-            .strip_prefix(&options.origin_dir)
-            .map_err(|_| DotSyncError::RelativePath {
-                path: full_origin_path.clone(),
-                base: options.origin_dir.clone(),
-            })?;
-
-        if rules.is_ignored(relative_path) {
-            continue;
-        }
-
-        let source = options.destination_dir.join(relative_path);
-
-        if !source.exists() && !source.is_symlink() {
-            eprintln!(
-                "Warning: '{}' not found in destination, skipping.",
-                relative_path.display()
-            );
-            continue;
-        }
-
-        if source.is_symlink() {
-            eprintln!(
-                "Warning: skipping symlink '{}'.",
-                source.display()
-            );
-            continue;
-        }
-
-        let dest = options.origin_dir.join(relative_path);
-
-        if source.is_dir() {
-            copy_dir_all(&source, &dest, options.dry_run, options.reverse_only_files, options.verbose)?;
-        } else {
-            copy_file(&source, &dest, options.dry_run, options.verbose)?;
         }
     }
 
