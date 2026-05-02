@@ -1,91 +1,95 @@
 # dotsync
 
-Rust CLI and library for synchronizing dotfiles with a `stow`-style structure.
+Rust CLI and library for managing dotfiles with a `stow`-style structure.
 
-## CLI usage
+## Commands
 
-Applying from origin to destination is the default behavior:
+### `dotsync config <destination_path>`
 
-```bash
-dotsync <origin_dir> <destination_dir> [options]
-```
-
-To synchronize in reverse, from destination back to origin:
+Set the repository destination path (where your dotfiles repo lives). This writes to `~/.config/dotsync/config.toml` so other commands know where to find your repo.
 
 ```bash
-dotsync <origin_dir> <destination_dir> --reverse [options]
+dotsync config ~/dotfiles
 ```
 
-### What each mode does
+If `<destination_path>` is a directory, `dotsync` will also scaffold a `.dotsyncignore` file with a comment header if one does not already exist.
 
-#### Apply (default)
+### `dotsync add <path>`
 
-Copies files from `origin` (your repo) to `destination` (your machine), file by file.
-Only the files that exist in the repo are touched — nothing else on your machine is affected.
+Copy a dotfile or directory from `$HOME` into the repo, preserving its path relative to `$HOME`.
 
 ```bash
-# Files inside ~/.config
-dotsync $HOME/dotfiles/config/.config/ ~/.config
+# Copy ~/.config/nvim into ~/dotfiles/.config/nvim
+dotsync add ~/.config/nvim
 
-# Dotfiles at the root of $HOME (.zshrc, .gitconfig, etc.)
-dotsync $HOME/dotfiles/dot/ ~/
+# Copy ~/.zshrc into ~/dotfiles/.zshrc
+dotsync add ~/.zshrc
 ```
 
-#### Reverse
-
-Copies files and folders from `destination` (your machine) back to `origin` (your repo),
-so you can capture changes made by apps and commit them.
-
-- **Files** in `origin` are copied individually from `destination`.
-- **Folders** in `origin` are synced entirely from `destination` using `rsync`, capturing
-  any new files the app may have created inside them.
-- Entries not present in `origin` are never touched — your repo is always the whitelist.
-- Symlinks are skipped (they are machine-local and meaningless in a repo).
-
-```bash
-dotsync $HOME/dotfiles/config/.config/ ~/.config --reverse
-```
-
-Direction:
-
-- No command: copies from `origin` to `destination`.
-- `--reverse`: copies from `destination` to `origin`, following the structure of `origin`.
-
-For dotfiles, usually:
-
-- `origin`: your dotfiles repository, for example `$HOME/dotfiles`.
-- `destination`: the system/home directory you sync against, for example `$HOME`.
+Files matching `.dotsyncignore` patterns are skipped automatically.
 
 Options:
 
-- `-n`, `--dry-run`: shows what would happen without copying files.
-- `-v`, `--verbose`: shows detailed output of operations.
-- `--reverse`: enables reverse mode.
-- `--reverse-only-files`: enables reverse mode but only copies files, skipping folders.
-- `--origin <path>`: origin directory path.
-- `--destination <path>`: destination directory path.
-- `--dest <path>`: short alias for `--destination`.
-- `-h`, `--help`: shows help.
-- `--version`: shows the version.
+- `-n`, `--dry-run`: show what would happen without copying files.
+- `-v`, `--verbose`: print each copied file (warnings always shown).
 
-Examples:
+### `dotsync apply [<path>]`
+
+Apply tracked dotfiles from the repo to `$HOME`.
 
 ```bash
-# Simulate applying from origin to destination
-dotsync --dry-run --origin $HOME/dotfiles --destination $HOME
+# Apply everything
+dotsync apply
 
-# Apply from origin to destination
-dotsync --origin $HOME/dotfiles --destination $HOME
-
-# Simulate reverse sync from destination to origin
-dotsync --dry-run --reverse --origin $HOME/dotfiles --destination $HOME
-
-# Reverse sync from destination to origin
-dotsync --reverse --origin $HOME/dotfiles --destination $HOME
-
-# Alternative reverse form
-dotsync reverse $HOME/dotfiles $HOME
+# Apply only .config/nvim
+dotsync apply .config/nvim
 ```
+
+- Without `<path>`: copies every tracked file from the repo to `$HOME`.
+- With `<path>`: applies only that subdirectory.
+
+Files matching `.dotsyncignore` are skipped.
+
+Options:
+
+- `-n`, `--dry-run`: show what would happen without copying files.
+- `-v`, `--verbose`: print each copied file.
+
+### `dotsync readd [--dirs]`
+
+Re-add tracked files from `$HOME` back into the repo. Useful when apps have updated their config files and you want to capture those changes.
+
+```bash
+# Re-add each tracked file individually
+dotsync readd
+
+# Re-add by parent directory, also capturing new files
+dotsync readd --dirs
+```
+
+- Without `--dirs`: only the exact files already tracked in the repo are copied back.
+- With `--dirs`: the parent directory of each tracked file is copied recursively, so new files created by the app are also captured.
+
+Options:
+
+- `--dirs`: group by directory instead of copying file by file.
+- `-n`, `--dry-run`: show what would happen without copying files.
+- `-v`, `--verbose`: print each copied file.
+
+## `.dotsyncignore`
+
+Patterns follow gitignore semantics:
+
+- No slash → matches name at any depth (`.DS_Store`, `*.log`)
+- With slash → relative to the repo root (`.config/nvim/sessions/`)
+- Leading `/` → anchored to root (`/.zshrc.bak`)
+- Prefix `!` → negate a previous pattern (`!important.log`)
+- Lines starting with `#` are comments
+
+## Global options
+
+- `-h`, `--help`: show usage.
+- `--version`: show version information.
 
 ## Installation with curl
 

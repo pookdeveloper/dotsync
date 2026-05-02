@@ -138,16 +138,16 @@ pub fn add_dotfile(
     dry_run: bool,
     verbose: bool,
 ) -> Result<(), DotSyncError> {
-    if !source.exists() {
-        return Err(DotSyncError::InvalidOriginDir(source.to_path_buf()));
-    }
-
     let relative = source
         .strip_prefix(home_dir)
         .map_err(|_| DotSyncError::NotUnderHome {
             source: source.to_path_buf(),
             home: home_dir.to_path_buf(),
         })?;
+
+    if !source.exists() {
+        return Err(DotSyncError::InvalidOriginDir(source.to_path_buf()));
+    }
 
     let rules = IgnoreRules::load(repo_dir);
     if rules.is_ignored(relative) {
