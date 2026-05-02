@@ -6,6 +6,12 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[derive(Debug)]
+pub enum FileStatus {
+    Modified(PathBuf),
+    Missing(PathBuf),
+}
+
 mod ignore;
 use ignore::IgnoreRules;
 
@@ -308,6 +314,109 @@ fn effective_dir_unit(relative: &Path) -> PathBuf {
         }
         _ => relative.parent().unwrap_or(relative).to_path_buf(),
     }
+}
+
+/// Returns the sync status of every tracked file: files that differ from HOME
+/// (`Modified`) and files present in the repo but absent from HOME (`Missing`).
+/// Files that match `.dotsyncignore` are skipped. Clean files are not reported.
+pub fn status_dotfiles(repo_dir: &Path, home_dir: &Path) -> Result<Vec<FileStatus>, DotSyncError> {
+    validate_origin_dir(repo_dir)?;
+    let rules = IgnoreRules::load(repo_dir);
+    let mut statuses: Vec<FileStatus> = Vec::new();
+    collect_status(repo_dir, repo_dir, home_dir, &rules, &mut statuses)?;
+    statuses.sort_by_key(|s| match s {
+        FileStatus::Modified(p) | FileStatus::Missing(p) => p.clone(),
+    });
+    Ok(statuses)
+}
+
+fn collect_status(
+    current: &Path,
+    repo_dir: &Path,
+    home_dir: &Path,
+    rules: &IgnoreRules,
+    statuses: &mut Vec<FileStatus>,
+) -> Result<(), DotSyncError> {
+    for entry in read_dir_entries(current)? {
+        if is_internal_entry(&entry) {
+            continue;
+        }
+        let relative = entry.strip_prefix(repo_dir).map_err(|_| DotSyncError::RelativePath {
+            path: entry.clone(),
+            base: repo_dir.to_path_buf(),
+        })?;
+        if rules.is_ignored(relative) {
+            continue;
+        }
+        if entry.is_dir() {
+            collect_status(&entry, repo_dir, home_dir, rules, statuses)?;
+        } else {
+            let home_file = home_dir.join(relative);
+            if !home_file.exists() {
+                statuses.push(FileStatus::Missing(relative.to_path_buf()));
+            } else if !files_equal(&entry, &home_file)? {
+                statuses.push(FileStatus::Modified(relative.to_path_buf()));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn files_equal(a: &Path, b: &Path) -> Result<bool, DotSyncError> {
+    let ca = fs::read(a).map_err(|source| DotSyncError::Io {
+        context: format!("Could not read '{}'", a.display()),
+        source,
+    })?;
+    let cb = fs::read(b).map_err(|source| DotSyncError::Io {
+        context: format!("Could not read '{}'", b.display()),
+        source,
+    })?;
+    Ok(ca == cb)
+}
+
+/// Runs `diff -u` between HOME and the repo for every file that differs.
+/// Output goes directly to stdout so the user sees colour and paging from
+/// their terminal. Returns `true` if any differences were found.
+pub fn diff_dotfiles(repo_dir: &Path, home_dir: &Path) -> Result<bool, DotSyncError> {
+    let statuses = status_dotfiles(repo_dir, home_dir)?;
+    if statuses.is_empty() {
+        return Ok(false);
+    }
+    for status in &statuses {
+        match status {
+            FileStatus::Modified(relative) => {
+                run_diff(&home_dir.join(relative), &repo_dir.join(relative), relative)?;
+            }
+            FileStatus::Missing(relative) => {
+                run_diff(Path::new("/dev/null"), &repo_dir.join(relative), relative)?;
+            }
+        }
+    }
+    Ok(true)
+}
+
+fn run_diff(home_file: &Path, repo_file: &Path, relative: &Path) -> Result<(), DotSyncError> {
+    let label_a = format!("a/{}", relative.display());
+    let label_b = format!("b/{}", relative.display());
+
+    let status = Command::new("diff")
+        .args(["-u", "-L", &label_a, "-L", &label_b])
+        .arg(home_file)
+        .arg(repo_file)
+        .status()
+        .map_err(|source| DotSyncError::Io {
+            context: "Could not execute 'diff'".to_string(),
+            source,
+        })?;
+
+    if status.code() == Some(2) {
+        return Err(DotSyncError::CommandFailed {
+            command: format!("diff -u {} {}", home_file.display(), repo_file.display()),
+            status: "2".to_string(),
+        });
+    }
+
+    Ok(())
 }
 
 /// Synchronizes dotfiles from `origin_dir` (repo) to `destination_dir` (home).

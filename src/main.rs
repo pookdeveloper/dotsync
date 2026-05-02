@@ -2,7 +2,10 @@ use std::env;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use dotsync::{add_dotfile, init_ignore_file, readd_dotfiles, sync_dotfiles, DotSyncError, SyncOptions};
+use dotsync::{
+    add_dotfile, diff_dotfiles, init_ignore_file, readd_dotfiles, status_dotfiles, sync_dotfiles,
+    DotSyncError, FileStatus, SyncOptions,
+};
 
 mod config;
 
@@ -35,6 +38,8 @@ enum CliCommand {
     Add { source: PathBuf, dry_run: bool, verbose: bool },
     Apply { path: Option<PathBuf>, dry_run: bool, verbose: bool },
     Readd { dirs: bool, dry_run: bool, verbose: bool },
+    Status,
+    Diff,
 }
 
 fn main() {
@@ -115,6 +120,39 @@ fn run() -> Result<(), AppError> {
                 println!("\nDone.");
             }
         }
+        CliCommand::Status => {
+            let repo = require_destination()?;
+            let home = require_home()?;
+            let statuses = status_dotfiles(&repo, &home)?;
+            if statuses.is_empty() {
+                println!("All tracked files are in sync.");
+            } else {
+                for s in &statuses {
+                    match s {
+                        FileStatus::Modified(p) => println!("M  {}", p.display()),
+                        FileStatus::Missing(p) => println!("?  {}", p.display()),
+                    }
+                }
+                let modified = statuses.iter().filter(|s| matches!(s, FileStatus::Modified(_))).count();
+                let missing = statuses.iter().filter(|s| matches!(s, FileStatus::Missing(_))).count();
+                println!();
+                let mut parts: Vec<String> = Vec::new();
+                if modified > 0 {
+                    parts.push(format!("{modified} modified"));
+                }
+                if missing > 0 {
+                    parts.push(format!("{missing} not applied"));
+                }
+                println!("{}", parts.join(", "));
+            }
+        }
+        CliCommand::Diff => {
+            let repo = require_destination()?;
+            let home = require_home()?;
+            if !diff_dotfiles(&repo, &home)? {
+                println!("All tracked files are in sync.");
+            }
+        }
     }
 
     Ok(())
@@ -151,6 +189,8 @@ fn parse_arguments(args: impl IntoIterator<Item = String>) -> Result<CliCommand,
         Some("add") => parse_add_command(&skip_command(&args, "add")),
         Some("apply") => parse_apply_command(&skip_command(&args, "apply")),
         Some("readd") => parse_readd_command(&skip_command(&args, "readd")),
+        Some("status") => parse_no_arg_command(&skip_command(&args, "status"), "status", CliCommand::Status),
+        Some("diff") => parse_no_arg_command(&skip_command(&args, "diff"), "diff", CliCommand::Diff),
         _ => Err(AppError::Usage(
             "Unknown command. See --help for usage.".to_string(),
         )),
@@ -286,11 +326,23 @@ fn absolute_path(value: impl AsRef<Path>) -> Result<PathBuf, AppError> {
     }
 }
 
+fn parse_no_arg_command(args: &[String], name: &str, cmd: CliCommand) -> Result<CliCommand, AppError> {
+    for arg in args {
+        if arg.starts_with('-') {
+            return Err(AppError::Usage(format!("Unknown option: {arg}")));
+        }
+        return Err(AppError::Usage(format!("'{name}' takes no arguments, got: {arg}")));
+    }
+    Ok(cmd)
+}
+
 fn print_usage() {
     eprintln!("Usage:");
     eprintln!("  dotsync config <destination_path>");
     eprintln!("  dotsync add [-n] [-v] <path>");
     eprintln!("  dotsync apply [-n] [-v] [<path>]");
+    eprintln!("  dotsync status");
+    eprintln!("  dotsync diff");
     eprintln!();
     eprintln!("Commands:");
     eprintln!("  config <path>            Set the repository destination path.");
@@ -301,6 +353,10 @@ fn print_usage() {
     eprintln!("                           With <path>: applies only that subdirectory.");
     eprintln!("  readd [-n] [-v] [--dirs] Re-add tracked files from $HOME into the repo.");
     eprintln!("                           --dirs: copy entire parent dirs to catch new files.");
+    eprintln!("  status                   Show which tracked files differ from $HOME.");
+    eprintln!("                           M = modified, ? = not yet applied to $HOME.");
+    eprintln!("  diff                     Show unified diff between $HOME and the repo.");
+    eprintln!("                           Use before apply to review what will change.");
     eprintln!();
     eprintln!("Options:");
     eprintln!("  -n, --dry-run            Show what would happen without copying files.");
