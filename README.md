@@ -1,18 +1,20 @@
 # dotsync
 
-Rust CLI and library for managing dotfiles with a `stow`-style structure.
+Rust CLI and library for managing dotfiles.
 
 ## Commands
 
 ### `dotsync config <destination_path>`
 
-Set the repository destination path (where your dotfiles repo lives). This writes to `~/.config/dotsync/config.toml` so other commands know where to find your repo.
+Set the repository destination path (where your dotfiles repo lives). Writes to `~/.config/dotsync/config.toml` so other commands know where to find your repo.
 
 ```bash
 dotsync config ~/dotfiles
 ```
 
-If `<destination_path>` is a directory, `dotsync` will also scaffold a `.dotsyncignore` file with a comment header if one does not already exist.
+If `<destination_path>` is an existing directory, `dotsync` also scaffolds a `.dotsyncignore` file with a comment header if one does not already exist.
+
+---
 
 ### `dotsync add <path>`
 
@@ -32,6 +34,8 @@ Options:
 
 - `-n`, `--dry-run`: show what would happen without copying files.
 - `-v`, `--verbose`: print each copied file (warnings always shown).
+
+---
 
 ### `dotsync apply [<path>]`
 
@@ -55,6 +59,8 @@ Options:
 - `-n`, `--dry-run`: show what would happen without copying files.
 - `-v`, `--verbose`: print each copied file.
 
+---
+
 ### `dotsync readd [--dirs]`
 
 Re-add tracked files from `$HOME` back into the repo. Useful when apps have updated their config files and you want to capture those changes.
@@ -76,6 +82,39 @@ Options:
 - `-n`, `--dry-run`: show what would happen without copying files.
 - `-v`, `--verbose`: print each copied file.
 
+---
+
+### `dotsync status`
+
+Show which tracked files differ from `$HOME`. Useful before running `apply` or `readd` to know what is out of sync.
+
+```bash
+dotsync status
+```
+
+Output format:
+
+```
+M  .config/nvim/init.lua   # modified — file exists in $HOME but content differs
+?  .zshrc                  # not applied — file is in the repo but missing from $HOME
+```
+
+Prints a summary line at the end (`2 modified, 1 not applied`). Exits silently when everything is in sync.
+
+---
+
+### `dotsync diff`
+
+Show a unified diff between `$HOME` and the repo for every file that differs. Output goes directly to your terminal so paging and colour work normally.
+
+```bash
+dotsync diff
+```
+
+Files missing from `$HOME` are diffed against `/dev/null` (shown as pure additions). Prints `All tracked files are in sync.` when there is nothing to diff.
+
+---
+
 ## `.dotsyncignore`
 
 Patterns follow gitignore semantics:
@@ -86,20 +125,22 @@ Patterns follow gitignore semantics:
 - Prefix `!` → negate a previous pattern (`!important.log`)
 - Lines starting with `#` are comments
 
+---
+
 ## Global options
 
 - `-h`, `--help`: show usage.
 - `--version`: show version information.
 
-## Installation with curl
+---
 
-`scripts/install.sh` installs binaries published in GitHub Releases. The repository must publish assets according to the contract documented in `packaging/RELEASE.md`.
+## Installation
+
+### curl
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/pookdeveloper/dotsync/main/scripts/install.sh | sh
 ```
-
-Advanced users can override the GitHub repository with `DOTSYNC_REPO=owner/repo` when testing forks.
 
 To install a specific version:
 
@@ -108,9 +149,9 @@ curl -fsSL https://raw.githubusercontent.com/pookdeveloper/dotsync/main/scripts/
   | DOTSYNC_VERSION=v0.1.0 sh
 ```
 
-## Homebrew
+Advanced users can override the GitHub repository with `DOTSYNC_REPO=owner/repo` when testing forks.
 
-You can install `dotsync` using Homebrew in a few steps if the formula has been published to a tap:
+### Homebrew
 
 ```bash
 brew tap pookdeveloper/tap
